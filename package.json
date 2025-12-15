@@ -1,0 +1,134 @@
+{
+  "name": "touch-grass-ide",
+  "displayName": "Touch Grass IDE",
+  "description": "The open-source brainrot IDE. Play games while AI writes your code.",
+  "version": "1.2.0",
+  "publisher": "pigeon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CMLKevin/touch-grass-ide"
+  },
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "brainrot",
+    "ai",
+    "productivity",
+    "games",
+    "claude",
+    "cursor",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "touchgrass.openBrainrot",
+        "title": "Touch Grass: Open Brainrot Panel",
+        "icon": "$(game)"
+      },
+      {
+        "command": "touchgrass.toggleAutoMode",
+        "title": "Touch Grass: Toggle Auto-Detection"
+      },
+      {
+        "command": "touchgrass.resetStats",
+        "title": "Touch Grass: Reset All Stats"
+      }
+    ],
+    "configuration": {
+      "title": "Touch Grass IDE",
+      "properties": {
+        "touchgrass.autoDetect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically show brainrot panel during AI generation"
+        },
+        "touchgrass.autoMinimize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-hide panel when AI generation completes"
+        },
+        "touchgrass.brainrotIntensity": {
+          "type": "string",
+          "enum": [
+            "touching-grass",
+            "casual",
+            "degenerate",
+            "terminal"
+          ],
+          "default": "casual",
+          "description": "How much brainrot do you want?"
+        },
+        "touchgrass.enableAchievements": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show achievement notifications"
+        },
+        "touchgrass.customSources": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name for the source"
+              },
+              "url": {
+                "type": "string",
+                "description": "URL to embed"
+              },
+              "icon": {
+                "type": "string",
+                "description": "Emoji icon for the source"
+              }
+            },
+            "required": ["name", "url"]
+          },
+          "description": "Custom sources to show in the Custom tab"
+        },
+        "touchgrass.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Touch Grass status in the status bar"
+        },
+        "touchgrass.casinoEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the casino feature and currency earning"
+        },
+        "touchgrass.earningRate": {
+          "type": "number",
+          "default": 1,
+          "description": "Grass Coins earned per second of active coding"
+        },
+        "touchgrass.idleTimeout": {
+          "type": "number",
+          "default": 30,
+          "description": "Seconds of inactivity before coding is considered idle"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.84.0",
+    "esbuild": "^0.19.8",
+    "typescript": "^5.3.2"
+  }
+}
