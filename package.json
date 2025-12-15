@@ -3,7 +3,7 @@
   "displayName": "Touch Grass IDE",
   "description": "The open-source brainrot IDE. Play games while AI writes your code.",
   "version": "1.2.0",
-  "publisher": "pigeon",
+  "publisher": "TouchGrassIDE",
   "repository": {
     "type": "git",
     "url": "https://github.com/CMLKevin/touch-grass-ide"
