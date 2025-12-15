@@ -125,7 +125,7 @@ export class PomodoroManager implements vscode.Disposable {
 
       // Show notification
       vscode.window.showInformationMessage(
-        `🍅 Pomodoro complete! Time for a ${this.shouldTakeLongBreak() ? 'long ' : ''}break.`,
+        `🍅 Pomodoro complete! ${this.shouldTakeLongBreak() ? 'You cooked. Take a long break.' : 'Time to touch grass.'}`,
         'Start Break',
         'Skip'
       ).then((choice) => {
@@ -138,7 +138,7 @@ export class PomodoroManager implements vscode.Disposable {
       this._onBreakComplete.fire();
 
       vscode.window.showInformationMessage(
-        '⏰ Break over! Ready to focus?',
+        '⏰ Break over! Back to the grind?',
         'Start Work',
         'Skip'
       ).then((choice) => {

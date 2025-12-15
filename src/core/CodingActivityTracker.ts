@@ -10,6 +10,7 @@ export class CodingActivityTracker implements vscode.Disposable {
   private idleTimeout: number = 30000; // 30 seconds
   private isPanelVisible: boolean = false;
   private isAIGenerating: boolean = false;
+  private isPomodoroWorkMode: boolean = false;
 
   constructor() {
     this.setupListeners();
@@ -79,6 +80,10 @@ export class CodingActivityTracker implements vscode.Disposable {
     this.isAIGenerating = generating;
   }
 
+  public setPomodoroWorkMode(isWorkMode: boolean): void {
+    this.isPomodoroWorkMode = isWorkMode;
+  }
+
   private startTicking(): void {
     // Award coins every second when actively coding
     this.tickInterval = setInterval(() => {
@@ -97,17 +102,8 @@ export class CodingActivityTracker implements vscode.Disposable {
     const now = Date.now();
     const timeSinceActivity = now - this.lastActivityTime;
 
-    // Check if user is idle
-    if (timeSinceActivity > this.idleTimeout) {
-      this.isActive = false;
-    }
-
-    // Check if we should award coins
-    const shouldAward =
-      this.isActive &&
-      !this.isPanelVisible &&
-      !this.isAIGenerating &&
-      !StateManager.getInstance().isBrainrotBlocked();
+    // Check if we should award coins: panel open + Pomodoro work mode active
+    const shouldAward = this.isPanelVisible && this.isPomodoroWorkMode;
 
     if (shouldAward) {
       try {

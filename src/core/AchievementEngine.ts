@@ -33,13 +33,6 @@ const ACHIEVEMENTS: Achievement[] = [
     rarity: 'common',
   },
   {
-    id: 'first-social',
-    name: 'Doom Scroller',
-    description: 'Opened social media in the extension',
-    icon: '📱',
-    rarity: 'common',
-  },
-  {
     id: 'first-pomodoro',
     name: 'Tomato Timer',
     description: 'Completed your first Pomodoro session',
@@ -93,7 +86,7 @@ const ACHIEVEMENTS: Achievement[] = [
   {
     id: 'snake-500',
     name: 'Anaconda',
-    description: 'Score 500+ in Snake',
+    description: 'Score 500+ in Snake (+1000 aura)',
     icon: '🐍',
     rarity: 'rare',
   },
@@ -120,7 +113,7 @@ const ACHIEVEMENTS: Achievement[] = [
   },
   {
     id: 'pomodoro-25',
-    name: 'Time Lord',
+    name: 'Sigma Grindset',
     description: 'Complete 25 Pomodoro sessions',
     icon: '⌛',
     rarity: 'rare',
@@ -135,8 +128,8 @@ const ACHIEVEMENTS: Achievement[] = [
   },
   {
     id: 'snake-1000',
-    name: 'Ouroboros',
-    description: 'Score 1000+ in Snake',
+    name: 'The Rizzler',
+    description: 'Score 1000+ in Snake (unspoken rizz)',
     icon: '♾️',
     rarity: 'legendary',
   },
@@ -150,7 +143,7 @@ const ACHIEVEMENTS: Achievement[] = [
   // Cursed/Secret Achievements
   {
     id: 'midnight-coder',
-    name: 'Sleep is for the Weak',
+    name: 'Only in Ohio',
     description: 'Used Touch Grass IDE between 2am and 5am',
     icon: '🌙',
     rarity: 'cursed',
@@ -183,8 +176,16 @@ const ACHIEVEMENTS: Achievement[] = [
   {
     id: 'rage-quit',
     name: 'Rage Quit',
-    description: 'Play 5 games in under 2 minutes',
+    description: 'Play 5 games in under 2 minutes (-500 aura)',
     icon: '😤',
+    rarity: 'cursed',
+    secret: true,
+  },
+  {
+    id: 'fanum-tax',
+    name: 'Fanum Tax',
+    description: 'Lose your entire $GRASS balance to gambling',
+    icon: '🍔',
     rarity: 'cursed',
     secret: true,
   },
@@ -199,28 +200,28 @@ const ACHIEVEMENTS: Achievement[] = [
   {
     id: 'high-roller',
     name: 'High Roller',
-    description: 'Bet 1000+ GC at once',
+    description: 'Bet 1000+ $GRASS at once',
     icon: '💎',
     rarity: 'rare',
   },
   {
     id: 'jackpot',
     name: 'JACKPOT!',
-    description: 'Win 100x or more on a single bet',
+    description: 'Win 100x or more on a single bet (+infinite aura)',
     icon: '🎰',
     rarity: 'legendary',
   },
   {
     id: 'house-always-wins',
     name: 'House Always Wins',
-    description: 'Lose 1000 GC total in the casino',
+    description: 'Lose 1000 $GRASS total in the casino',
     icon: '🏠',
     rarity: 'uncommon',
   },
   {
     id: 'lucky-7',
     name: 'Lucky 777',
-    description: 'Get triple 7s on the slots',
+    description: 'Get triple 7s on the slots (six seven!)',
     icon: '7️⃣',
     rarity: 'rare',
   },
@@ -233,16 +234,16 @@ const ACHIEVEMENTS: Achievement[] = [
   },
   {
     id: 'whale',
-    name: 'Whale',
-    description: 'Accumulate 10,000 GC balance',
-    icon: '🐋',
+    name: 'Diamond Hands',
+    description: 'Stack 10,000 $GRASS (WAGMI)',
+    icon: '💎',
     rarity: 'legendary',
   },
   {
     id: 'broke',
-    name: 'Broke',
-    description: 'Reach 0 GC balance',
-    icon: '💸',
+    name: 'Paper Hands',
+    description: 'Reach 0 $GRASS balance (NGMI)',
+    icon: '📄',
     rarity: 'cursed',
     secret: true,
   },
@@ -313,8 +314,16 @@ export class AchievementEngine {
       cursed: '🟥',
     };
 
+    const raritySuffix: Record<string, string> = {
+      common: '',
+      uncommon: '',
+      rare: ' (+500 aura)',
+      legendary: ' (+∞ aura)',
+      cursed: ' (ohio moment)',
+    };
+
     vscode.window.showInformationMessage(
-      `${rarityEmoji[achievement.rarity]} Achievement Unlocked: ${achievement.icon} ${achievement.name}`
+      `${rarityEmoji[achievement.rarity]} Achievement Unlocked: ${achievement.icon} ${achievement.name}${raritySuffix[achievement.rarity]}`
     );
   }
 

@@ -32,7 +32,11 @@
       {
         "command": "touchgrass.openBrainrot",
         "title": "Touch Grass: Open Brainrot Panel",
-        "icon": "$(game)"
+        "shortTitle": "Touch Grass",
+        "icon": {
+          "light": "resources/icon-light.svg",
+          "dark": "resources/icon-dark.svg"
+        }
       },
       {
         "command": "touchgrass.toggleAutoMode",
@@ -43,6 +47,14 @@
         "title": "Touch Grass: Reset All Stats"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "touchgrass.openBrainrot",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Touch Grass IDE",
       "properties": {

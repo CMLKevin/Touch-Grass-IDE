@@ -8,6 +8,8 @@ export class BrainrotPanel {
   public static currentPanel: BrainrotPanel | undefined;
   private static _onVisibilityChange = new vscode.EventEmitter<boolean>();
   public static onVisibilityChange = BrainrotPanel._onVisibilityChange.event;
+  private static _onPomodoroWorkModeChange = new vscode.EventEmitter<boolean>();
+  public static onPomodoroWorkModeChange = BrainrotPanel._onPomodoroWorkModeChange.event;
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private readonly _context: vscode.ExtensionContext;
@@ -53,6 +55,8 @@ export class BrainrotPanel {
     this._pomodoroManager = new PomodoroManager(context);
     this._pomodoroManager.onStateChange((state) => {
       this._sendPomodoroState(state);
+      // Fire event for currency earning - true when in active work mode
+      BrainrotPanel._onPomodoroWorkModeChange.fire(state.isActive && state.mode === 'work');
     });
 
     this._update();
@@ -107,13 +111,6 @@ export class BrainrotPanel {
             message.game as string,
             message.score as number
           );
-        } catch {
-          // Not initialized
-        }
-        break;
-      case 'socialOpened':
-        try {
-          AchievementEngine.getInstance().check('first-social');
         } catch {
           // Not initialized
         }
@@ -174,6 +171,24 @@ export class BrainrotPanel {
         break;
       case 'resetStats':
         vscode.commands.executeCommand('touchgrass.resetStats');
+        break;
+      case 'fetchHackerNews':
+        this._fetchHackerNews(message.page as number);
+        break;
+      case 'fetchLessWrong':
+        this._fetchRssFeed('lesswrong');
+        break;
+      case 'fetchACX':
+        this._fetchRssFeed('acx');
+        break;
+      case 'fetchHNPost':
+        this._fetchHNPost(message.id as number);
+        break;
+      case 'fetchLWPost':
+        this._fetchLWPost(message.postId as string);
+        break;
+      case 'fetchACXPost':
+        this._fetchACXPost(message.url as string);
         break;
     }
   }
@@ -242,6 +257,7 @@ export class BrainrotPanel {
       const achievements = AchievementEngine.getInstance();
       if (currency.getBalance() === 0) {
         achievements.check('broke');
+        achievements.check('fanum-tax');
       }
       achievements.checkCasinoAchievements();
     } catch {
@@ -277,6 +293,354 @@ export class BrainrotPanel {
     });
   }
 
+  private async _fetchHackerNews(page: number = 0): Promise<void> {
+    try {
+      const topStoriesUrl = 'https://hacker-news.firebaseio.com/v0/topstories.json';
+      const storyIds = await this._httpsGet(topStoriesUrl) as number[];
+
+      const startIndex = page * 15;
+      const selectedIds = storyIds.slice(startIndex, startIndex + 15);
+
+      type HNStory = { id: number; title: string; url?: string; score: number; by: string; time: number; descendants?: number };
+      const stories = await Promise.all(
+        selectedIds.map(id =>
+          this._httpsGet(`https://hacker-news.firebaseio.com/v0/item/${id}.json`) as Promise<HNStory>
+        )
+      );
+
+      // Filter out null/deleted stories and safely extract domain
+      const validStories = stories.filter(s => s && s.id).map(s => {
+        let domain = 'news.ycombinator.com';
+        if (s.url) {
+          try {
+            domain = new URL(s.url).hostname.replace('www.', '');
+          } catch {
+            domain = 'unknown';
+          }
+        }
+        return {
+          id: s.id,
+          title: s.title || 'Untitled',
+          url: s.url,
+          score: s.score || 0,
+          by: s.by || 'unknown',
+          time: s.time,
+          descendants: s.descendants || 0,
+          domain
+        };
+      });
+
+      this._panel.webview.postMessage({
+        command: 'hackerNewsData',
+        stories: validStories,
+        hasMore: storyIds.length > startIndex + 15,
+        page
+      });
+    } catch (error) {
+      this._panel.webview.postMessage({
+        command: 'hackerNewsError',
+        error: 'Failed to load Hacker News'
+      });
+    }
+  }
+
+  private async _fetchRssFeed(source: 'lesswrong' | 'acx'): Promise<void> {
+    try {
+      const urls = {
+        lesswrong: 'https://www.lesswrong.com/feed.xml',
+        acx: 'https://www.astralcodexten.com/feed'
+      };
+
+      const xml = await this._httpsGet(urls[source], true) as string;
+      const items = this._parseRss(xml);
+
+      this._panel.webview.postMessage({
+        command: source === 'lesswrong' ? 'lessWrongData' : 'acxData',
+        items: items.slice(0, 15)
+      });
+    } catch (error) {
+      this._panel.webview.postMessage({
+        command: source === 'lesswrong' ? 'lessWrongError' : 'acxError',
+        error: `Failed to load ${source === 'lesswrong' ? 'LessWrong' : 'ACX'}`
+      });
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _httpsGet(url: string, asText: boolean = false): Promise<any> {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const https = require('https');
+    return new Promise((resolve, reject) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      https.get(url, (res: any) => {
+        let data = '';
+        res.on('data', (chunk: string) => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(asText ? data : JSON.parse(data));
+          } catch {
+            resolve(data);
+          }
+        });
+      }).on('error', reject);
+    });
+  }
+
+  private _parseRss(xml: string): Array<{title: string; link: string; pubDate: string; description?: string}> {
+    const items: Array<{title: string; link: string; pubDate: string; description?: string}> = [];
+    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+    let match;
+
+    while ((match = itemRegex.exec(xml)) !== null) {
+      const itemXml = match[1];
+      const title = this._extractXmlTag(itemXml, 'title');
+      const link = this._extractXmlTag(itemXml, 'link');
+      const pubDate = this._extractXmlTag(itemXml, 'pubDate');
+      const description = this._extractXmlTag(itemXml, 'description');
+
+      if (title && link) {
+        items.push({ title, link, pubDate, description });
+      }
+    }
+    return items;
+  }
+
+  private _extractXmlTag(xml: string, tag: string): string {
+    const match = xml.match(new RegExp(`<${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+    return match ? (match[1] || match[2] || '').trim() : '';
+  }
+
+  // Fetch HN post with comments
+  private async _fetchHNPost(id: number): Promise<void> {
+    try {
+      type HNItem = {
+        id: number;
+        type: string;
+        title?: string;
+        text?: string;
+        url?: string;
+        score?: number;
+        by?: string;
+        time: number;
+        descendants?: number;
+        kids?: number[];
+        deleted?: boolean;
+        dead?: boolean;
+      };
+
+      const story = await this._httpsGet(`https://hacker-news.firebaseio.com/v0/item/${id}.json`) as HNItem;
+
+      if (!story) {
+        throw new Error('Story not found');
+      }
+
+      // Fetch comments recursively (limit depth to 3 levels, max 50 comments)
+      const fetchComments = async (ids: number[], depth: number, maxTotal: number): Promise<HNItem[]> => {
+        if (!ids || ids.length === 0 || depth > 3 || maxTotal <= 0) return [];
+
+        const toFetch = ids.slice(0, Math.min(ids.length, maxTotal));
+        const comments = await Promise.all(
+          toFetch.map(cid => this._httpsGet(`https://hacker-news.firebaseio.com/v0/item/${cid}.json`) as Promise<HNItem>)
+        );
+
+        const validComments = comments.filter(c => c && !c.deleted && !c.dead);
+        let remaining = maxTotal - validComments.length;
+
+        // Fetch nested replies
+        for (const comment of validComments) {
+          if (comment.kids && comment.kids.length > 0 && remaining > 0) {
+            const replies = await fetchComments(comment.kids, depth + 1, Math.min(5, remaining));
+            (comment as HNItem & { replies: HNItem[] }).replies = replies;
+            remaining -= replies.length;
+          }
+        }
+
+        return validComments;
+      };
+
+      const comments = story.kids ? await fetchComments(story.kids, 1, 50) : [];
+
+      let domain = 'news.ycombinator.com';
+      if (story.url) {
+        try {
+          domain = new URL(story.url).hostname.replace('www.', '');
+        } catch {
+          domain = 'unknown';
+        }
+      }
+
+      this._panel.webview.postMessage({
+        command: 'hnPostData',
+        post: {
+          id: story.id,
+          title: story.title,
+          url: story.url,
+          text: story.text,
+          score: story.score,
+          by: story.by,
+          time: story.time,
+          descendants: story.descendants || 0,
+          domain
+        },
+        comments
+      });
+    } catch (error) {
+      this._panel.webview.postMessage({
+        command: 'hnPostError',
+        error: 'Failed to load post'
+      });
+    }
+  }
+
+  // Fetch LessWrong post via GraphQL
+  private async _fetchLWPost(postId: string): Promise<void> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const https = require('https');
+
+      const query = {
+        query: `
+          query PostById($id: String) {
+            post(input: {selector: {_id: $id}}) {
+              result {
+                _id
+                title
+                slug
+                htmlBody
+                postedAt
+                baseScore
+                voteCount
+                commentCount
+                user {
+                  displayName
+                  username
+                }
+              }
+            }
+          }
+        `,
+        variables: { id: postId }
+      };
+
+      const postData = JSON.stringify(query);
+
+      const result = await new Promise<string>((resolve, reject) => {
+        const req = https.request({
+          hostname: 'www.lesswrong.com',
+          path: '/graphql',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData)
+          }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => data += chunk);
+          res.on('end', () => resolve(data));
+        });
+        req.on('error', reject);
+        req.write(postData);
+        req.end();
+      });
+
+      const parsed = JSON.parse(result);
+      const post = parsed?.data?.post?.result;
+
+      if (!post) {
+        throw new Error('Post not found');
+      }
+
+      this._panel.webview.postMessage({
+        command: 'lwPostData',
+        post: {
+          id: post._id,
+          title: post.title,
+          slug: post.slug,
+          content: post.htmlBody,
+          author: post.user?.displayName || post.user?.username || 'Unknown',
+          date: post.postedAt,
+          karma: post.baseScore,
+          voteCount: post.voteCount,
+          commentCount: post.commentCount
+        }
+      });
+    } catch (error) {
+      this._panel.webview.postMessage({
+        command: 'lwPostError',
+        error: 'Failed to load article'
+      });
+    }
+  }
+
+  // Fetch ACX/Substack article content
+  private async _fetchACXPost(url: string): Promise<void> {
+    try {
+      const html = await this._httpsGet(url, true) as string;
+
+      // Extract article content from Substack HTML
+      // Look for the article body
+      let title = '';
+      let author = 'Scott Alexander';
+      let date = '';
+      let content = '';
+
+      // Extract title
+      const titleMatch = html.match(/<h1[^>]*class="[^"]*post-title[^"]*"[^>]*>([\s\S]*?)<\/h1>/i) ||
+                         html.match(/<meta property="og:title" content="([^"]+)"/i);
+      if (titleMatch) {
+        title = titleMatch[1].replace(/<[^>]+>/g, '').trim();
+      }
+
+      // Extract date
+      const dateMatch = html.match(/<time[^>]*datetime="([^"]+)"/) ||
+                        html.match(/<meta property="article:published_time" content="([^"]+)"/);
+      if (dateMatch) {
+        date = dateMatch[1];
+      }
+
+      // Extract article body - Substack uses specific class names
+      const bodyMatch = html.match(/<div[^>]*class="[^"]*body markup[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*(?:<div[^>]*class="[^"]*post-footer|<footer)/i) ||
+                        html.match(/<div[^>]*class="[^"]*available-content[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<div[^>]*class="[^"]*subscription/i) ||
+                        html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+
+      if (bodyMatch) {
+        content = bodyMatch[1];
+        // Clean up the content - remove scripts, styles, and excessive whitespace
+        content = content
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<button[\s\S]*?<\/button>/gi, '')
+          .replace(/class="[^"]*"/g, '')
+          .replace(/style="[^"]*"/g, '')
+          .replace(/data-[a-z-]+="[^"]*"/g, '')
+          .trim();
+      }
+
+      if (!content) {
+        // Fallback: try to get any substantial content
+        const fallbackMatch = html.match(/<div[^>]*>([\s\S]{500,}?)<\/div>/);
+        content = fallbackMatch ? fallbackMatch[1] : '<p>Unable to extract article content. Please open in browser.</p>';
+      }
+
+      this._panel.webview.postMessage({
+        command: 'acxPostData',
+        post: {
+          url,
+          title: title || 'Untitled',
+          author,
+          date,
+          content
+        }
+      });
+    } catch (error) {
+      this._panel.webview.postMessage({
+        command: 'acxPostError',
+        error: 'Failed to load article'
+      });
+    }
+  }
+
   private _update(): void {
     this._panel.webview.html = this._getHtmlContent();
   }
@@ -298,354 +662,803 @@ export class BrainrotPanel {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="
-        default-src 'none';
-        style-src ${this._panel.webview.cspSource} 'unsafe-inline';
-        script-src 'nonce-${nonce}';
-        img-src ${this._panel.webview.cspSource} https: data:;
-        frame-src https://www.youtube.com https://www.tiktok.com https://twitter.com https://x.com https://www.reddit.com https:;
-      ">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${this._panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${this._panel.webview.cspSource} https: data:; frame-src https:;">
       <title>Touch Grass IDE</title>
       <style>
+        /* ===== CSS CUSTOM PROPERTIES ===== */
+        :root {
+          /* Primary Orange Palette */
+          --orange-primary: #FF6B35;
+          --orange-hover: #FF8C42;
+          --orange-soft: #FF9F6C;
+          --orange-glow: rgba(255, 107, 53, 0.4);
+
+          /* Whites & Creams */
+          --white-pure: #FFFFFF;
+          --white-cream: #FFF8F0;
+          --white-soft: rgba(255, 255, 255, 0.9);
+
+          /* Background Palette */
+          --bg-deep: #1A1A2E;
+          --bg-card: #16213E;
+          --bg-elevated: #1F2947;
+
+          /* Glass Effects */
+          --glass-bg: rgba(255, 255, 255, 0.08);
+          --glass-bg-solid: rgba(255, 255, 255, 0.12);
+          --glass-border: rgba(255, 255, 255, 0.15);
+          --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+
+          /* Accent Colors */
+          --success: #4ADE80;
+          --danger: #FF4757;
+          --gold: #FFD93D;
+          --purple: #A855F7;
+
+          /* Text Colors */
+          --text-primary: #FFFFFF;
+          --text-secondary: rgba(255, 255, 255, 0.7);
+          --text-muted: rgba(255, 255, 255, 0.5);
+
+          /* Timing Functions */
+          --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+          --smooth: cubic-bezier(0.4, 0, 0.2, 1);
+          --snappy: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          background: #1e1e1e;
-          color: #fff;
+          background: linear-gradient(135deg, var(--bg-deep) 0%, #0F0F1A 100%);
+          color: var(--text-primary);
           min-height: 100vh;
+          overflow-x: hidden;
         }
+
+        /* ===== GLASSMORPHISM BASE ===== */
+        .glass-card {
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid var(--glass-border);
+          border-radius: 16px;
+          box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        /* ===== HEADER ===== */
         .header {
           text-align: center;
-          padding: 16px;
-          border-bottom: 1px solid #3d3d3d;
+          padding: 16px 16px 12px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border-bottom: 1px solid var(--glass-border);
+          position: relative;
         }
-        .header h1 { font-size: 20px; color: #4ade80; }
-        .status { font-size: 12px; color: #fbbf24; margin-top: 4px; }
+        .header::after {
+          content: '';
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          height: 2px;
+          background: linear-gradient(90deg, transparent, var(--orange-primary), transparent);
+          opacity: 0.6;
+        }
+        .header h1 {
+          font-size: 20px;
+          color: var(--orange-primary);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
+        .header h1 .grass-icon {
+          display: inline-block;
+          animation: wiggle 2s ease-in-out infinite;
+        }
+        .status {
+          font-size: 12px;
+          color: var(--orange-soft);
+          margin-top: 6px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
+        .status-dot {
+          width: 8px;
+          height: 8px;
+          background: var(--orange-primary);
+          border-radius: 50%;
+          animation: pulse-glow 1.5s ease-in-out infinite;
+        }
 
-        /* Tabs */
+        /* ===== TAB NAVIGATION ===== */
         .tab-nav {
           display: flex;
-          border-bottom: 1px solid #3d3d3d;
-          background: #252525;
+          gap: 4px;
+          padding: 8px 12px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          border-bottom: 1px solid var(--glass-border);
+          position: relative;
         }
         .tab-btn {
           flex: 1;
-          padding: 12px;
-          background: none;
+          padding: 10px 8px;
+          background: transparent;
           border: none;
-          color: #888;
+          border-radius: 12px;
+          color: var(--text-secondary);
           cursor: pointer;
-          font-size: 14px;
-          transition: all 0.2s;
+          font-size: 13px;
+          font-weight: 500;
+          transition: all 0.3s var(--bounce);
+          position: relative;
+          overflow: hidden;
         }
-        .tab-btn:hover { color: #fff; background: #2d2d2d; }
-        .tab-btn.active { color: #4ade80; border-bottom: 2px solid #4ade80; background: #2d2d2d; }
-        .tab-panel { display: none; padding: 16px; opacity: 0; transform: translateY(10px); transition: opacity 0.15s ease, transform 0.15s ease; }
-        .tab-panel.active { display: block; opacity: 1; transform: translateY(0); }
+        .tab-btn::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: var(--orange-primary);
+          opacity: 0;
+          border-radius: 12px;
+          transition: opacity 0.3s ease;
+        }
+        .tab-btn span {
+          position: relative;
+          z-index: 1;
+        }
+        .tab-btn:hover {
+          color: var(--white-pure);
+          transform: translateY(-2px);
+        }
+        .tab-btn:hover::before {
+          opacity: 0.15;
+        }
+        .tab-btn.active {
+          color: var(--white-pure);
+          background: var(--orange-primary);
+          box-shadow: 0 4px 15px var(--orange-glow);
+        }
+        .tab-btn.active:hover {
+          transform: translateY(-2px) scale(1.02);
+        }
+        .tab-btn:active {
+          transform: translateY(0) scale(0.98);
+        }
 
-        /* Games */
+        .tab-panel {
+          display: none;
+          padding: 16px;
+          opacity: 0;
+          transform: translateY(10px);
+          transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+        .tab-panel.active {
+          display: block;
+          opacity: 1;
+          transform: translateY(0);
+          animation: slideUpBounce 0.4s var(--bounce);
+        }
+
+        /* ===== GAMES TAB ===== */
         .game-grid {
           display: grid;
           grid-template-columns: repeat(2, 1fr);
           gap: 12px;
         }
         .game-card {
-          background: #2d2d2d;
-          border: 2px solid #3d3d3d;
-          border-radius: 12px;
-          padding: 16px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid var(--glass-border);
+          border-radius: 16px;
+          padding: 20px 16px;
           text-align: center;
           cursor: pointer;
-          transition: all 0.2s;
-        }
-        .game-card:hover { border-color: #4ade80; transform: translateY(-2px); }
-        .game-icon { font-size: 32px; display: block; margin-bottom: 6px; }
-        .game-name { font-weight: 600; display: block; font-size: 14px; }
-        .game-highscore { font-size: 11px; color: #888; }
-        .game-container { display: none; text-align: center; }
-        .game-container.active { display: block; }
-        #game-canvas { background: #1a1a1a; border-radius: 8px; max-width: 100%; }
-        .game-ui { margin-top: 12px; display: flex; justify-content: space-between; align-items: center; }
-        .game-score { font-size: 16px; font-weight: 600; }
-
-        /* Social */
-        .social-nav { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-        .social-btn {
-          padding: 8px 16px;
-          background: #2d2d2d;
-          border: 1px solid #3d3d3d;
-          border-radius: 20px;
-          color: #fff;
-          cursor: pointer;
-          font-size: 13px;
-        }
-        .social-btn:hover { border-color: #4ade80; }
-        .social-btn.active { background: #4ade80; color: #1e1e1e; border-color: #4ade80; }
-        .embed-container {
-          background: #2d2d2d;
-          border-radius: 8px;
-          height: 400px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          transition: all 0.3s var(--bounce);
+          position: relative;
           overflow: hidden;
         }
-        .embed-container iframe { width: 100%; height: 100%; border: none; }
-        .embed-placeholder { text-align: center; color: #888; }
-        .embed-placeholder p { margin: 8px 0; }
+        .game-card::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(135deg, var(--orange-primary), var(--orange-hover));
+          opacity: 0;
+          transition: opacity 0.3s ease;
+          z-index: 0;
+        }
+        .game-card:hover {
+          transform: translateY(-8px) scale(1.02);
+          border-color: var(--orange-primary);
+          box-shadow: 0 12px 30px var(--orange-glow);
+        }
+        .game-card:hover::before {
+          opacity: 0.1;
+        }
+        .game-card:hover .game-icon {
+          animation: bounce 0.5s var(--bounce);
+        }
+        .game-card:active {
+          transform: translateY(-4px) scale(0.98);
+        }
+        .game-icon {
+          font-size: 36px;
+          display: block;
+          margin-bottom: 8px;
+          position: relative;
+          z-index: 1;
+          transition: transform 0.3s var(--bounce);
+        }
+        .game-name {
+          font-weight: 600;
+          display: block;
+          font-size: 15px;
+          color: var(--white-pure);
+          position: relative;
+          z-index: 1;
+          margin-bottom: 4px;
+        }
+        .game-highscore {
+          font-size: 11px;
+          color: var(--text-muted);
+          position: relative;
+          z-index: 1;
+        }
+        .game-container {
+          display: none;
+          text-align: center;
+        }
+        .game-container.active {
+          display: block;
+          animation: scaleIn 0.3s var(--bounce);
+        }
+        #game-canvas {
+          background: var(--bg-card);
+          border-radius: 12px;
+          max-width: 100%;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        .game-ui {
+          margin-top: 12px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 12px;
+          background: var(--glass-bg);
+          border-radius: 12px;
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+        }
+        .game-score {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--orange-primary);
+        }
 
-        /* Settings */
+        /* ===== SETTINGS TAB ===== */
         .settings-container { padding: 8px 0; }
         .settings-section {
-          background: #2d2d2d;
-          border-radius: 8px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid var(--glass-border);
+          border-radius: 16px;
           padding: 16px;
           margin-bottom: 12px;
         }
         .settings-section-title {
-          font-size: 12px;
-          font-weight: 600;
-          color: #888;
+          font-size: 11px;
+          font-weight: 700;
+          color: var(--orange-primary);
           text-transform: uppercase;
-          letter-spacing: 1px;
+          letter-spacing: 1.5px;
           margin-bottom: 12px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
         .setting-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 10px 0;
-          border-bottom: 1px solid #3d3d3d;
+          padding: 12px 0;
+          border-bottom: 1px solid var(--glass-border);
+          transition: background 0.2s ease;
         }
         .setting-row:last-child { border-bottom: none; }
+        .setting-row:hover {
+          background: rgba(255, 255, 255, 0.03);
+          margin: 0 -8px;
+          padding-left: 8px;
+          padding-right: 8px;
+          border-radius: 8px;
+        }
         .setting-info { flex: 1; }
-        .setting-label { font-size: 14px; color: #fff; }
-        .setting-desc { font-size: 11px; color: #888; margin-top: 2px; }
+        .setting-label { font-size: 14px; color: var(--white-pure); font-weight: 500; }
+        .setting-desc { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
         .setting-control { margin-left: 16px; }
-        /* Toggle switch */
+
+        /* Toggle switch - Orange themed with bounce */
         .toggle {
           position: relative;
-          width: 44px;
-          height: 24px;
-          background: #444;
-          border-radius: 12px;
+          width: 48px;
+          height: 26px;
+          background: rgba(255, 255, 255, 0.15);
+          border-radius: 13px;
           cursor: pointer;
-          transition: background 0.2s;
+          transition: all 0.3s var(--bounce);
+          border: 1px solid var(--glass-border);
         }
-        .toggle.active { background: #4ade80; }
+        .toggle:hover {
+          background: rgba(255, 255, 255, 0.2);
+        }
+        .toggle.active {
+          background: var(--orange-primary);
+          border-color: var(--orange-primary);
+          box-shadow: 0 0 15px var(--orange-glow);
+        }
         .toggle::after {
           content: '';
           position: absolute;
           width: 20px;
           height: 20px;
-          background: #fff;
+          background: var(--white-pure);
           border-radius: 50%;
           top: 2px;
-          left: 2px;
-          transition: transform 0.2s;
+          left: 3px;
+          transition: transform 0.3s var(--bounce);
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
-        .toggle.active::after { transform: translateX(20px); }
+        .toggle.active::after {
+          transform: translateX(22px);
+        }
+
         /* Select dropdown */
         .setting-select {
-          background: #444;
-          border: none;
-          color: #fff;
-          padding: 6px 12px;
-          border-radius: 6px;
+          background: var(--glass-bg);
+          border: 1px solid var(--glass-border);
+          color: var(--white-pure);
+          padding: 8px 12px;
+          border-radius: 8px;
           font-size: 13px;
           cursor: pointer;
+          transition: all 0.2s ease;
         }
-        .setting-select:hover { background: #555; }
-        /* Slider */
+        .setting-select:hover {
+          border-color: var(--orange-primary);
+        }
+        .setting-select:focus {
+          outline: none;
+          border-color: var(--orange-primary);
+          box-shadow: 0 0 0 2px var(--orange-glow);
+        }
+
+        /* Slider - Orange themed */
         .setting-slider {
           width: 100px;
           height: 6px;
           -webkit-appearance: none;
-          background: #444;
+          background: rgba(255, 255, 255, 0.15);
           border-radius: 3px;
           cursor: pointer;
         }
         .setting-slider::-webkit-slider-thumb {
           -webkit-appearance: none;
-          width: 16px;
-          height: 16px;
-          background: #4ade80;
+          width: 18px;
+          height: 18px;
+          background: var(--orange-primary);
           border-radius: 50%;
           cursor: pointer;
+          box-shadow: 0 2px 6px var(--orange-glow);
+          transition: transform 0.2s var(--bounce);
+        }
+        .setting-slider::-webkit-slider-thumb:hover {
+          transform: scale(1.2);
         }
         .slider-value {
           font-size: 12px;
-          color: #4ade80;
-          min-width: 30px;
+          color: var(--orange-primary);
+          min-width: 35px;
           text-align: right;
           margin-left: 8px;
+          font-weight: 600;
         }
         .slider-group { display: flex; align-items: center; }
+
         /* Danger button */
         .btn-danger {
-          background: #dc2626;
-          color: #fff;
+          background: var(--danger);
+          color: var(--white-pure);
+          border: none;
+          transition: all 0.3s var(--bounce);
         }
-        .btn-danger:hover { background: #ef4444; }
+        .btn-danger:hover {
+          background: #FF5A68;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 15px rgba(255, 71, 87, 0.4);
+        }
         .settings-footer {
           text-align: center;
-          padding: 16px;
-          color: #666;
+          padding: 20px 16px;
+          color: var(--text-muted);
           font-size: 11px;
+          border-top: 1px solid var(--glass-border);
+          margin-top: 8px;
         }
-        .settings-footer a { color: #4ade80; text-decoration: none; }
-        .settings-footer a:hover { text-decoration: underline; }
+        .settings-footer a {
+          color: var(--orange-primary);
+          text-decoration: none;
+          font-weight: 500;
+          transition: color 0.2s ease;
+        }
+        .settings-footer a:hover {
+          color: var(--orange-hover);
+          text-decoration: underline;
+        }
 
-        /* Pomodoro */
-        .pomodoro-container { text-align: center; padding: 20px; }
+        /* ===== POMODORO TAB ===== */
+        .pomodoro-container {
+          text-align: center;
+          padding: 20px;
+        }
+        .pomodoro-timer-ring {
+          width: 200px;
+          height: 200px;
+          margin: 0 auto 20px;
+          position: relative;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--glass-bg);
+          border-radius: 50%;
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 2px solid var(--glass-border);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 0 60px rgba(255, 107, 53, 0.1);
+        }
+        .pomodoro-timer-ring::before {
+          content: '';
+          position: absolute;
+          inset: -4px;
+          border-radius: 50%;
+          border: 3px solid transparent;
+          border-top-color: var(--orange-primary);
+          animation: spin 3s linear infinite;
+          opacity: 0.5;
+        }
         .pomodoro-mode {
-          font-size: 14px;
-          color: #888;
+          font-size: 11px;
+          color: var(--text-secondary);
           text-transform: uppercase;
           letter-spacing: 2px;
-          margin-bottom: 8px;
+          margin-bottom: 4px;
+          font-weight: 600;
         }
-        .pomodoro-mode.work { color: #ef4444; }
-        .pomodoro-mode.break { color: #4ade80; }
+        .pomodoro-mode.work { color: var(--orange-primary); }
+        .pomodoro-mode.break { color: var(--success); }
         .pomodoro-timer {
-          font-size: 72px;
-          font-weight: bold;
+          font-size: 52px;
+          font-weight: 800;
           font-family: 'SF Mono', Monaco, monospace;
-          color: #fff;
-          margin: 20px 0;
+          color: var(--white-pure);
+          letter-spacing: -2px;
         }
         .pomodoro-controls {
           display: flex;
           gap: 12px;
           justify-content: center;
-          margin: 20px 0;
+          margin: 24px 0;
         }
         .pomodoro-stats {
           display: flex;
           justify-content: center;
-          gap: 32px;
+          gap: 16px;
           margin: 24px 0;
           padding: 16px;
-          background: #2d2d2d;
-          border-radius: 8px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid var(--glass-border);
+          border-radius: 16px;
         }
-        .pomo-stat { text-align: center; }
+        .pomo-stat {
+          text-align: center;
+          padding: 8px 16px;
+          background: rgba(255, 255, 255, 0.05);
+          border-radius: 12px;
+          transition: transform 0.3s var(--bounce);
+        }
+        .pomo-stat:hover {
+          transform: translateY(-4px);
+        }
         .pomo-stat-value {
           display: block;
           font-size: 24px;
-          font-weight: bold;
-          color: #4ade80;
+          font-weight: 800;
+          color: var(--orange-primary);
         }
         .pomo-stat-label {
           display: block;
-          font-size: 11px;
-          color: #888;
+          font-size: 10px;
+          color: var(--text-muted);
           margin-top: 4px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
         }
         .pomodoro-info {
-          color: #888;
+          color: var(--text-muted);
           font-size: 12px;
           margin-top: 20px;
+          padding: 12px;
+          background: var(--glass-bg);
+          border-radius: 12px;
         }
         .pomodoro-info p { margin: 4px 0; }
 
-        /* Buttons */
+        /* ===== BUTTONS ===== */
         .btn {
-          background: #4ade80;
-          color: #1e1e1e;
+          background: var(--orange-primary);
+          color: var(--white-pure);
           border: none;
-          padding: 8px 16px;
-          border-radius: 6px;
+          padding: 10px 20px;
+          border-radius: 12px;
           cursor: pointer;
           font-weight: 600;
           font-size: 13px;
+          transition: all 0.3s var(--bounce);
+          position: relative;
+          overflow: hidden;
         }
-        .btn:hover { background: #22c55e; }
-        .btn-secondary { background: #3d3d3d; color: #fff; }
-        .btn-secondary:hover { background: #4d4d4d; }
+        .btn::before {
+          content: '';
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          width: 0;
+          height: 0;
+          background: rgba(255, 255, 255, 0.3);
+          border-radius: 50%;
+          transform: translate(-50%, -50%);
+          transition: width 0.4s ease, height 0.4s ease;
+        }
+        .btn:hover {
+          background: var(--orange-hover);
+          transform: translateY(-3px);
+          box-shadow: 0 8px 20px var(--orange-glow);
+        }
+        .btn:hover::before {
+          width: 200px;
+          height: 200px;
+        }
+        .btn:active {
+          transform: translateY(-1px) scale(0.98);
+        }
+        .btn-secondary {
+          background: var(--glass-bg);
+          color: var(--text-secondary);
+          border: 1px solid var(--glass-border);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+        }
+        .btn-secondary:hover {
+          background: var(--glass-bg-solid);
+          color: var(--white-pure);
+          border-color: var(--orange-primary);
+          box-shadow: 0 4px 15px rgba(255, 107, 53, 0.2);
+        }
 
         /* Casino */
         .casino-header {
           text-align: center;
-          padding: 12px;
-          background: linear-gradient(135deg, #1a472a 0%, #2d5a3f 100%);
-          border-radius: 8px;
+          padding: 16px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid var(--glass-border);
+          border-radius: 16px;
           margin-bottom: 16px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
         }
         .balance-display {
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 8px;
-          font-size: 24px;
+          gap: 12px;
+          font-size: 28px;
           font-weight: bold;
         }
-        .balance-icon { font-size: 28px; }
-        .balance-amount { color: #fbbf24; }
-        .balance-label { color: #888; font-size: 14px; }
-        .casino-card:hover { border-color: #fbbf24; }
+        .balance-icon {
+          font-size: 32px;
+        }
+        .balance-amount {
+          color: var(--success);
+          text-shadow: 0 0 20px rgba(74, 222, 128, 0.5);
+          font-family: 'Courier New', monospace;
+        }
+        .balance-label {
+          color: var(--success);
+          font-size: 12px;
+          font-weight: bold;
+          font-family: 'Courier New', monospace;
+          letter-spacing: 1px;
+          opacity: 0.9;
+        }
+        .casino-card {
+          background: var(--glass-bg);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid var(--glass-border);
+          border-radius: 16px;
+          transition: all 0.3s var(--bounce);
+        }
+        .casino-card:hover {
+          border-color: var(--gold);
+          transform: translateY(-6px) scale(1.02);
+          box-shadow: 0 12px 30px rgba(255, 217, 61, 0.3);
+        }
         .casino-controls {
           display: flex;
-          gap: 8px;
+          gap: 10px;
           justify-content: center;
           flex-wrap: wrap;
-          margin: 12px 0;
+          margin: 16px 0;
         }
         .casino-ui {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-top: 12px;
+          margin-top: 16px;
+          padding: 12px;
+          background: var(--glass-bg);
+          border-radius: 12px;
+          border: 1px solid var(--glass-border);
         }
         .bet-controls {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 10px;
         }
         .bet-controls input {
-          width: 80px;
-          padding: 6px;
-          border-radius: 4px;
-          border: 1px solid #3d3d3d;
-          background: #2d2d2d;
-          color: #fff;
+          width: 90px;
+          padding: 10px 12px;
+          border-radius: 10px;
+          border: 1px solid var(--glass-border);
+          background: rgba(255, 255, 255, 0.05);
+          color: var(--white-pure);
           text-align: center;
+          font-weight: 600;
+          font-size: 14px;
+          transition: all 0.3s ease;
+        }
+        .bet-controls input:focus {
+          outline: none;
+          border-color: var(--gold);
+          box-shadow: 0 0 15px rgba(255, 217, 61, 0.3);
         }
         .casino-info {
           text-align: center;
-          color: #888;
+          color: var(--white-cream);
           font-size: 12px;
           margin-top: 16px;
-          padding: 12px;
-          background: #252525;
-          border-radius: 8px;
+          padding: 16px;
+          background: var(--glass-bg);
+          backdrop-filter: blur(8px);
+          border: 1px solid var(--glass-border);
+          border-radius: 12px;
+          opacity: 0.8;
         }
-        .casino-info p { margin: 4px 0; }
-        .btn-bet { background: #fbbf24; color: #1e1e1e; }
-        .btn-bet:hover { background: #f59e0b; }
-        .btn-bet:disabled { background: #555; cursor: not-allowed; }
+        .casino-info p { margin: 6px 0; }
+        .btn-bet {
+          background: linear-gradient(135deg, var(--gold) 0%, #f59e0b 100%);
+          color: var(--bg-deep);
+          font-weight: 700;
+          padding: 12px 24px;
+          border-radius: 12px;
+          border: none;
+          transition: all 0.3s var(--bounce);
+          box-shadow: 0 4px 15px rgba(255, 217, 61, 0.3);
+        }
+        .btn-bet:hover {
+          transform: translateY(-3px) scale(1.05);
+          box-shadow: 0 8px 25px rgba(255, 217, 61, 0.5);
+        }
+        .btn-bet:active {
+          transform: translateY(-1px) scale(0.98);
+        }
+        .btn-bet:disabled {
+          background: rgba(255, 255, 255, 0.1);
+          color: rgba(255, 255, 255, 0.3);
+          cursor: not-allowed;
+          box-shadow: none;
+          transform: none;
+        }
         .casino-result {
           text-align: center;
-          padding: 20px;
-          font-size: 24px;
+          padding: 24px;
+          font-size: 28px;
           font-weight: bold;
+          border-radius: 16px;
+          background: var(--glass-bg);
+          margin-top: 16px;
         }
-        .casino-result.win { color: #4ade80; }
-        .casino-result.lose { color: #ef4444; }
+        .casino-result.win {
+          color: var(--success);
+          text-shadow: 0 0 20px rgba(74, 222, 128, 0.5);
+          animation: winPulse 0.5s ease;
+        }
+        .casino-result.lose {
+          color: var(--danger);
+          animation: shake 0.4s ease;
+        }
 
         /* Game Over */
         .game-over-overlay {
-          position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-          background: rgba(0,0,0,0.85);
-          display: none; justify-content: center; align-items: center;
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(26, 26, 46, 0.9);
+          display: none;
+          justify-content: center;
+          align-items: center;
           z-index: 100;
-          backdrop-filter: blur(4px);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
         }
-        .game-over-overlay.active { display: flex; animation: fadeIn 0.3s ease; }
-        .game-over-content { background: #2d2d2d; padding: 32px; border-radius: 16px; text-align: center; animation: scaleIn 0.3s ease; }
-        .game-over-content h2 { font-size: 24px; margin-bottom: 8px; }
-        .final-score { font-size: 48px; font-weight: bold; color: #4ade80; margin: 16px 0; }
-        .game-over-buttons { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
+        .game-over-overlay.active {
+          display: flex;
+          animation: fadeIn 0.3s ease;
+        }
+        .game-over-content {
+          background: var(--glass-bg);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border: 1px solid var(--glass-border);
+          padding: 40px;
+          border-radius: 24px;
+          text-align: center;
+          animation: slideUpBounce 0.5s var(--bounce);
+          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+          max-width: 320px;
+          width: 90%;
+        }
+        .game-over-content h2 {
+          font-size: 28px;
+          margin-bottom: 8px;
+          color: var(--white-pure);
+        }
+        .final-score {
+          font-size: 56px;
+          font-weight: bold;
+          color: var(--orange-primary);
+          margin: 20px 0;
+          text-shadow: 0 0 30px var(--orange-glow);
+          animation: counterBump 0.5s ease;
+        }
+        .final-score.new-record {
+          color: var(--gold);
+          animation: winPulse 0.6s ease infinite;
+          text-shadow: 0 0 40px rgba(255, 217, 61, 0.6);
+        }
+        .game-over-buttons {
+          display: flex;
+          gap: 16px;
+          justify-content: center;
+          margin-top: 24px;
+        }
+        .game-over-buttons .btn {
+          padding: 14px 28px;
+          font-size: 15px;
+          border-radius: 14px;
+        }
 
         /* ===== ANIMATIONS & TRANSITIONS ===== */
         /* Keyframe Animations */
@@ -655,8 +1468,8 @@ export class BrainrotPanel {
         @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes winPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
         @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-8px); } 40% { transform: translateX(8px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
-        @keyframes scorePop { 0% { transform: scale(1); } 50% { transform: scale(1.4); color: #4ade80; } 100% { transform: scale(1); } }
-        @keyframes glow { 0%, 100% { box-shadow: 0 0 5px rgba(74, 222, 128, 0.3); } 50% { box-shadow: 0 0 20px rgba(74, 222, 128, 0.6); } }
+        @keyframes scorePop { 0% { transform: scale(1); } 50% { transform: scale(1.4); color: var(--orange-primary); } 100% { transform: scale(1); } }
+        @keyframes glow { 0%, 100% { box-shadow: 0 0 5px var(--orange-glow); } 50% { box-shadow: 0 0 20px rgba(255, 107, 53, 0.6); } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
@@ -664,20 +1477,76 @@ export class BrainrotPanel {
         @keyframes slideIn { from { transform: translateX(-100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes flash { 0%, 50%, 100% { opacity: 1; } 25%, 75% { opacity: 0.3; } }
 
+        /* New playful animations */
+        @keyframes wiggle {
+          0%, 100% { transform: rotate(-3deg); }
+          50% { transform: rotate(3deg); }
+        }
+        @keyframes float {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-8px); }
+        }
+        @keyframes pulseGlow {
+          0%, 100% { box-shadow: 0 0 20px var(--orange-glow); }
+          50% { box-shadow: 0 0 40px rgba(255, 107, 53, 0.8); }
+        }
+        @keyframes slideUpBounce {
+          0% { transform: translateY(30px); opacity: 0; }
+          60% { transform: translateY(-8px); opacity: 1; }
+          100% { transform: translateY(0); opacity: 1; }
+        }
+        @keyframes confetti {
+          0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(-100px) rotate(720deg); opacity: 0; }
+        }
+        @keyframes ripple {
+          0% { transform: scale(0); opacity: 0.6; }
+          100% { transform: scale(4); opacity: 0; }
+        }
+        @keyframes counterBump {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.15); }
+        }
+        @keyframes shine {
+          0% { background-position: -200% center; }
+          100% { background-position: 200% center; }
+        }
+        @keyframes iconBounce {
+          0%, 100% { transform: scale(1); }
+          25% { transform: scale(1.2); }
+          50% { transform: scale(0.9); }
+          75% { transform: scale(1.1); }
+        }
+
         /* Enhanced Transitions */
-        .tab-btn, .game-card, .btn, .social-btn, .casino-card { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-        .tab-btn:hover { background: #3d3d3d; transform: translateY(-1px); }
-        .tab-btn:active { transform: translateY(0); }
-        .game-card:hover { transform: translateY(-4px); box-shadow: 0 8px 25px rgba(74, 222, 128, 0.25); }
-        .game-card:active { transform: translateY(-2px) scale(0.98); }
-        .casino-card:hover { transform: translateY(-4px); box-shadow: 0 8px 25px rgba(251, 191, 36, 0.3); border-color: #fbbf24; }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(74, 222, 128, 0.3); }
-        .btn:active { transform: translateY(0) scale(0.95); }
-        .btn-bet:hover { box-shadow: 0 4px 15px rgba(251, 191, 36, 0.4); }
-        .social-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255, 255, 255, 0.1); }
+        .tab-btn, .game-card, .btn, .casino-card {
+          transition: all 0.3s var(--bounce);
+        }
+        .tab-btn:hover {
+          background: rgba(255, 107, 53, 0.2);
+          transform: translateY(-2px);
+        }
+        .tab-btn:active { transform: translateY(0) scale(0.95); }
+        .tab-btn.active:hover { transform: translateY(-2px); }
+        .game-card:hover {
+          transform: translateY(-8px) scale(1.02);
+          box-shadow: 0 12px 35px var(--orange-glow);
+          border-color: var(--orange-primary);
+        }
+        .game-card:active { transform: translateY(-4px) scale(0.98); }
+        .game-card:hover .game-icon {
+          animation: iconBounce 0.5s ease;
+        }
+        .btn:hover {
+          transform: translateY(-3px) scale(1.02);
+          box-shadow: 0 8px 20px var(--orange-glow);
+        }
+        .btn:active { transform: translateY(-1px) scale(0.95); }
 
         /* Tab panel transitions */
-        .tab-panel { animation: fadeIn 0.2s ease; }
+        .tab-panel {
+          animation: slideUpBounce 0.4s var(--bounce);
+        }
 
         /* Win/Lose Effects */
         .win-effect { animation: winPulse 0.4s ease 3; }
@@ -686,29 +1555,553 @@ export class BrainrotPanel {
 
         /* Balance animations */
         .balance-amount { transition: all 0.3s ease; }
-        .balance-amount.increase { color: #4ade80; animation: scorePop 0.3s ease; }
-        .balance-amount.decrease { color: #ef4444; animation: shake 0.3s ease; }
+        .balance-amount.increase {
+          color: var(--success);
+          animation: scorePop 0.3s ease;
+          text-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
+        }
+        .balance-amount.decrease {
+          color: var(--danger);
+          animation: shake 0.3s ease;
+        }
 
         /* Game card glow on hover */
         .game-card::before {
           content: '';
           position: absolute;
           inset: -2px;
-          border-radius: 14px;
-          background: linear-gradient(45deg, #4ade80, #22c55e, #4ade80);
+          border-radius: 18px;
+          background: linear-gradient(45deg, var(--orange-primary), var(--orange-hover), var(--orange-primary));
+          background-size: 200% 200%;
           opacity: 0;
           transition: opacity 0.3s ease;
           z-index: -1;
+          animation: shine 3s linear infinite;
         }
         .game-card { position: relative; overflow: visible; }
-        .game-card:hover::before { opacity: 0.5; }
-        .casino-card::before { background: linear-gradient(45deg, #fbbf24, #f59e0b, #fbbf24); }
+        .game-card:hover::before { opacity: 0.6; }
+        .casino-card::before {
+          background: linear-gradient(45deg, var(--gold), #f59e0b, var(--gold));
+          background-size: 200% 200%;
+        }
 
         /* High score highlight */
-        .new-high-score { animation: winPulse 0.5s ease infinite; color: #fbbf24 !important; }
+        .new-high-score {
+          animation: winPulse 0.5s ease infinite;
+          color: var(--gold) !important;
+          text-shadow: 0 0 20px rgba(255, 217, 61, 0.5);
+        }
 
         /* Loading spinner */
         .loading { animation: spin 1s linear infinite; }
+
+        /* Interactive hover glow effect */
+        .hover-glow {
+          transition: all 0.3s var(--bounce);
+        }
+        .hover-glow:hover {
+          box-shadow: 0 0 30px var(--orange-glow);
+        }
+
+        /* ===== READING TAB ===== */
+        .reading-container {
+          padding: 0;
+        }
+        .reading-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 12px 16px;
+          background: var(--glass-bg);
+          border-bottom: 1px solid var(--glass-border);
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+        .reading-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--orange-primary);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .reading-source-tabs {
+          display: flex;
+          gap: 4px;
+        }
+        .source-btn {
+          padding: 6px 12px;
+          background: var(--glass-bg);
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
+          color: var(--text-secondary);
+          font-size: 11px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s var(--bounce);
+        }
+        .source-btn:hover {
+          background: var(--glass-bg-solid);
+          color: var(--white-pure);
+          transform: translateY(-1px);
+        }
+        .source-btn.active {
+          background: var(--orange-primary);
+          color: var(--white-pure);
+          border-color: var(--orange-primary);
+          box-shadow: 0 2px 8px var(--orange-glow);
+        }
+        .article-list {
+          padding: 8px;
+          max-height: calc(100vh - 220px);
+          overflow-y: auto;
+        }
+        .article-item {
+          background: var(--glass-bg);
+          border: 1px solid var(--glass-border);
+          border-radius: 12px;
+          padding: 12px 14px;
+          margin-bottom: 8px;
+          cursor: pointer;
+          transition: all 0.2s var(--bounce);
+          position: relative;
+        }
+        .article-item:hover {
+          transform: translateX(4px);
+          border-color: var(--orange-primary);
+          background: var(--glass-bg-solid);
+        }
+        .article-item:active {
+          transform: translateX(2px) scale(0.99);
+        }
+        .article-score {
+          position: absolute;
+          left: 14px;
+          top: 12px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          color: var(--orange-primary);
+          font-size: 11px;
+          font-weight: 700;
+          min-width: 32px;
+        }
+        .article-score .arrow {
+          font-size: 10px;
+          margin-bottom: 2px;
+        }
+        .article-content {
+          margin-left: 40px;
+        }
+        .article-title {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--white-pure);
+          line-height: 1.4;
+          margin-bottom: 6px;
+        }
+        .article-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          font-size: 10px;
+          color: var(--text-muted);
+        }
+        .article-meta span {
+          display: flex;
+          align-items: center;
+          gap: 3px;
+        }
+        .article-domain {
+          color: var(--text-secondary);
+        }
+        .reading-loading {
+          text-align: center;
+          padding: 40px 20px;
+          color: var(--text-muted);
+        }
+        .reading-loading .spinner {
+          width: 32px;
+          height: 32px;
+          border: 3px solid var(--glass-border);
+          border-top-color: var(--orange-primary);
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin: 0 auto 12px;
+        }
+        .reading-error {
+          text-align: center;
+          padding: 40px 20px;
+          color: var(--danger);
+        }
+        .reading-error .retry-btn {
+          margin-top: 12px;
+        }
+        .reading-load-more {
+          width: 100%;
+          padding: 12px;
+          margin-top: 4px;
+          background: var(--glass-bg);
+          border: 1px dashed var(--glass-border);
+          border-radius: 12px;
+          color: var(--text-secondary);
+          cursor: pointer;
+          font-size: 12px;
+          transition: all 0.2s ease;
+        }
+        .reading-load-more:hover {
+          background: var(--glass-bg-solid);
+          color: var(--white-pure);
+          border-style: solid;
+          border-color: var(--orange-primary);
+        }
+        .article-item.no-score .article-content {
+          margin-left: 0;
+        }
+        .article-item.no-score .article-score {
+          display: none;
+        }
+
+        /* ===== ARTICLE DETAIL VIEW ===== */
+        .article-detail {
+          display: none;
+          flex-direction: column;
+          height: 100%;
+        }
+        .article-detail.active {
+          display: flex;
+        }
+        .article-detail-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 10px 16px;
+          background: var(--glass-bg);
+          border-bottom: 1px solid var(--glass-border);
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+        .back-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 12px;
+          background: var(--glass-bg);
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
+          color: var(--text-secondary);
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.2s var(--bounce);
+        }
+        .back-btn:hover {
+          background: var(--glass-bg-solid);
+          color: var(--white-pure);
+          transform: translateX(-2px);
+        }
+        .open-external-btn {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 6px 10px;
+          background: transparent;
+          border: 1px solid var(--glass-border);
+          border-radius: 6px;
+          color: var(--text-muted);
+          font-size: 11px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .open-external-btn:hover {
+          border-color: var(--orange-primary);
+          color: var(--orange-primary);
+        }
+        .article-detail-title {
+          padding: 16px;
+          border-bottom: 1px solid var(--glass-border);
+        }
+        .article-detail-title h2 {
+          font-size: 16px;
+          font-weight: 600;
+          color: var(--white-pure);
+          line-height: 1.4;
+          margin: 0 0 8px 0;
+        }
+        .article-detail-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+        .article-detail-meta .score {
+          color: var(--orange-primary);
+          font-weight: 600;
+        }
+        .article-detail-meta .author {
+          color: var(--text-secondary);
+        }
+
+        /* HN-specific: Article/Discussion tabs */
+        .hn-view-tabs {
+          display: flex;
+          gap: 4px;
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--glass-border);
+        }
+        .hn-view-btn {
+          flex: 1;
+          padding: 10px 16px;
+          background: var(--glass-bg);
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
+          color: var(--text-secondary);
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s var(--bounce);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+        }
+        .hn-view-btn:hover {
+          background: var(--glass-bg-solid);
+          color: var(--white-pure);
+        }
+        .hn-view-btn.active {
+          background: var(--orange-primary);
+          color: var(--white-pure);
+          border-color: var(--orange-primary);
+        }
+        .hn-view-btn .count {
+          background: rgba(255,255,255,0.2);
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-size: 10px;
+        }
+
+        /* Article content area */
+        .article-body {
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px;
+        }
+        .article-body.iframe-container {
+          padding: 0;
+        }
+        .article-body iframe {
+          width: 100%;
+          height: 100%;
+          border: none;
+          background: #fff;
+        }
+        .article-text-content {
+          font-size: 14px;
+          line-height: 1.7;
+          color: var(--text-primary);
+        }
+        .article-text-content p {
+          margin: 0 0 16px 0;
+        }
+        .article-text-content h1, .article-text-content h2, .article-text-content h3 {
+          color: var(--white-pure);
+          margin: 24px 0 12px 0;
+        }
+        .article-text-content h1 { font-size: 20px; }
+        .article-text-content h2 { font-size: 17px; }
+        .article-text-content h3 { font-size: 15px; }
+        .article-text-content a {
+          color: var(--orange-primary);
+          text-decoration: none;
+        }
+        .article-text-content a:hover {
+          text-decoration: underline;
+        }
+        .article-text-content blockquote {
+          border-left: 3px solid var(--orange-primary);
+          margin: 16px 0;
+          padding: 8px 16px;
+          background: var(--glass-bg);
+          border-radius: 0 8px 8px 0;
+          color: var(--text-secondary);
+          font-style: italic;
+        }
+        .article-text-content ul, .article-text-content ol {
+          margin: 12px 0;
+          padding-left: 24px;
+        }
+        .article-text-content li {
+          margin: 6px 0;
+        }
+        .article-text-content pre, .article-text-content code {
+          background: var(--glass-bg-solid);
+          border-radius: 4px;
+          font-family: monospace;
+        }
+        .article-text-content pre {
+          padding: 12px;
+          overflow-x: auto;
+          margin: 12px 0;
+        }
+        .article-text-content code {
+          padding: 2px 6px;
+          font-size: 13px;
+        }
+        .article-text-content img {
+          max-width: 100%;
+          height: auto;
+          border-radius: 8px;
+          margin: 12px 0;
+        }
+
+        /* HN Post text (Ask HN, Show HN, etc.) */
+        .hn-post-text {
+          background: var(--glass-bg);
+          border-radius: 12px;
+          padding: 16px;
+          margin-bottom: 16px;
+          font-size: 13px;
+          line-height: 1.6;
+          color: var(--text-primary);
+        }
+        .hn-post-text a {
+          color: var(--orange-primary);
+        }
+
+        /* Comment thread styles */
+        .comment-thread {
+          padding: 0;
+        }
+        .comment {
+          padding: 12px 0;
+          border-bottom: 1px solid var(--glass-border);
+        }
+        .comment:last-child {
+          border-bottom: none;
+        }
+        .comment-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+        .comment-author {
+          color: var(--orange-primary);
+          font-weight: 600;
+          font-size: 12px;
+        }
+        .comment-time {
+          color: var(--text-muted);
+          font-size: 11px;
+        }
+        .comment-score {
+          color: var(--text-secondary);
+          font-size: 11px;
+          display: flex;
+          align-items: center;
+          gap: 2px;
+        }
+        .comment-body {
+          font-size: 13px;
+          line-height: 1.6;
+          color: var(--text-primary);
+        }
+        .comment-body p {
+          margin: 0 0 8px 0;
+        }
+        .comment-body p:last-child {
+          margin-bottom: 0;
+        }
+        .comment-body a {
+          color: var(--orange-primary);
+          word-break: break-all;
+        }
+        .comment-body code {
+          background: var(--glass-bg-solid);
+          padding: 1px 4px;
+          border-radius: 3px;
+          font-size: 12px;
+        }
+        .comment-body pre {
+          background: var(--glass-bg-solid);
+          padding: 8px 12px;
+          border-radius: 6px;
+          overflow-x: auto;
+          margin: 8px 0;
+        }
+
+        /* Nested replies */
+        .comment-replies {
+          margin-left: 16px;
+          padding-left: 12px;
+          border-left: 2px solid var(--glass-border);
+        }
+        .comment-replies .comment {
+          padding: 10px 0;
+        }
+        .comment-replies .comment-replies {
+          border-left-color: rgba(255,165,0,0.3);
+        }
+        .comment-replies .comment-replies .comment-replies {
+          border-left-color: rgba(255,165,0,0.15);
+        }
+
+        /* More comments indicator */
+        .more-replies {
+          padding: 8px 12px;
+          color: var(--text-muted);
+          font-size: 11px;
+          font-style: italic;
+        }
+
+        /* Empty state */
+        .no-comments {
+          text-align: center;
+          padding: 40px 20px;
+          color: var(--text-muted);
+        }
+
+        /* Reader view loading state */
+        .reader-loading {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 60px 20px;
+          color: var(--text-muted);
+        }
+        .reader-loading .spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid var(--glass-border);
+          border-top-color: var(--orange-primary);
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin-bottom: 16px;
+        }
+
+        /* Article open in browser prompt */
+        .open-in-browser {
+          text-align: center;
+          padding: 40px 20px;
+        }
+        .open-in-browser p {
+          color: var(--text-muted);
+          margin-bottom: 16px;
+          font-size: 13px;
+        }
+        .open-in-browser .btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
       </style>
     </head>
     <body class="intensity-${intensity}">
@@ -718,19 +2111,19 @@ export class BrainrotPanel {
       </div>
 
       <nav class="tab-nav">
-        <button class="tab-btn active" data-tab="games">🎮 Games</button>
-        <button class="tab-btn" data-tab="pomodoro">🍅 Pomodoro</button>
-        <button class="tab-btn" data-tab="social">📱 Social</button>
+        <button class="tab-btn active" data-tab="pomodoro">🍅 Pomodoro</button>
+        <button class="tab-btn" data-tab="reading">📰 Reading</button>
+        <button class="tab-btn" data-tab="games">🎮 Games</button>
         <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
       </nav>
 
       <!-- Games Tab -->
-      <section id="games-tab" class="tab-panel active">
+      <section id="games-tab" class="tab-panel">
         <div class="casino-header">
           <div class="balance-display">
-            <span class="balance-icon">🪙</span>
+            <span class="balance-icon">🌿</span>
             <span class="balance-amount" id="casino-balance">0</span>
-            <span class="balance-label">GC</span>
+            <span class="balance-label">$GRASS</span>
           </div>
         </div>
         <div id="game-selection" class="game-grid">
@@ -747,12 +2140,12 @@ export class BrainrotPanel {
           <div class="game-card casino-card" data-game="plinko">
             <span class="game-icon">🎱</span>
             <span class="game-name">Plinko</span>
-            <span class="game-highscore">Watch it drop!</span>
+            <span class="game-highscore">Let it cook</span>
           </div>
           <div class="game-card casino-card" data-game="slots">
             <span class="game-icon">🎰</span>
             <span class="game-name">Slots</span>
-            <span class="game-highscore">Spin to win!</span>
+            <span class="game-highscore">Feeling lucky?</span>
           </div>
         </div>
         <div id="game-container" class="game-container">
@@ -763,21 +2156,21 @@ export class BrainrotPanel {
             <div class="bet-controls" id="bet-controls" style="display: none;">
               <label>Bet: </label>
               <input type="number" id="bet-amount" value="10" min="1" step="10">
-              <span>GC</span>
+              <span>$GRASS</span>
             </div>
             <button class="btn btn-secondary" id="back-btn">← Back</button>
           </div>
         </div>
         <div class="casino-info">
-          <p>💰 Earn <strong>1 GC/second</strong> while coding</p>
-          <p>🎮 Panel must be closed to earn</p>
+          <p>🌿 Stack <strong>$GRASS</strong> during Pomodoro work sessions</p>
+          <p>🍅 WAGMI - start a timer to begin your sigma grind</p>
         </div>
       </section>
 
       <!-- Pomodoro Tab -->
-      <section id="pomodoro-tab" class="tab-panel">
+      <section id="pomodoro-tab" class="tab-panel active">
         <div class="pomodoro-container">
-          <div class="pomodoro-mode" id="pomodoro-mode">Work Time</div>
+          <div class="pomodoro-mode" id="pomodoro-mode">Grind Mode</div>
           <div class="pomodoro-timer" id="pomodoro-timer">25:00</div>
           <div class="pomodoro-controls">
             <button class="btn btn-secondary" id="pomo-reset-btn">Reset</button>
@@ -791,11 +2184,11 @@ export class BrainrotPanel {
             </div>
             <div class="pomo-stat">
               <span class="pomo-stat-value" id="pomo-work-time">0m</span>
-              <span class="pomo-stat-label">Work Time</span>
+              <span class="pomo-stat-label">Grind Time</span>
             </div>
             <div class="pomo-stat">
               <span class="pomo-stat-value" id="pomo-break-time">0m</span>
-              <span class="pomo-stat-label">Break Time</span>
+              <span class="pomo-stat-label">Grass Time</span>
             </div>
           </div>
           <div class="pomodoro-info">
@@ -806,41 +2199,62 @@ export class BrainrotPanel {
         </div>
       </section>
 
-      <!-- Social Tab -->
-      <section id="social-tab" class="tab-panel">
-        <div class="social-nav">
-          <button class="social-btn" data-social="youtube">📺 Shorts</button>
-          <button class="social-btn" data-social="tiktok">🎵 TikTok</button>
-          <button class="social-btn" data-social="twitter">𝕏 Twitter</button>
-          <button class="social-btn" data-social="reddit">🤖 Reddit</button>
-        </div>
-        <div class="embed-container" id="social-embed-container">
-          <div class="embed-placeholder">
-            <p>📱 Select a platform above</p>
-            <p style="font-size: 12px;">YouTube embeds directly, others open in browser</p>
+      <!-- Reading Tab -->
+      <section id="reading-tab" class="tab-panel">
+        <!-- List View -->
+        <div id="reading-list-view" class="reading-container">
+          <div class="reading-header">
+            <div class="reading-title">
+              <span>📰</span>
+              <span id="reading-source-title">Hacker News</span>
+            </div>
+            <div class="reading-source-tabs">
+              <button class="source-btn active" data-source="hn">HN</button>
+              <button class="source-btn" data-source="lw">LW</button>
+              <button class="source-btn" data-source="acx">ACX</button>
+            </div>
+          </div>
+          <div id="reading-content" class="article-list">
+            <div class="reading-loading">
+              <div class="spinner"></div>
+              <p>Select a source to load articles</p>
+            </div>
           </div>
         </div>
-        <div id="youtube-controls" style="display:none; margin-top: 12px;">
-          <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-bottom: 12px;">
-            <button class="btn btn-secondary yt-category active" data-category="programming">💻 Coding</button>
-            <button class="btn btn-secondary yt-category" data-category="lofi">🎵 Lo-Fi</button>
-            <button class="btn btn-secondary yt-category" data-category="satisfying">✨ Satisfying</button>
-            <button class="btn btn-secondary yt-category" data-category="memes">😂 Memes</button>
+
+        <!-- Detail View (hidden by default) -->
+        <div id="reading-detail-view" class="article-detail">
+          <div class="article-detail-header">
+            <button class="back-btn" id="reading-back-btn">
+              <span>←</span>
+              <span>Back</span>
+            </button>
+            <button class="open-external-btn" id="reading-open-external">
+              <span>↗</span>
+              <span>Open</span>
+            </button>
           </div>
-          <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 12px;">
-            <button class="btn btn-secondary" id="yt-prev-btn">← Prev</button>
-            <button class="btn" id="yt-next-btn">Next →</button>
+          <div class="article-detail-title">
+            <h2 id="detail-title">Article Title</h2>
+            <div class="article-detail-meta" id="detail-meta">
+              <!-- Dynamic meta info -->
+            </div>
           </div>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" id="youtube-url-input" placeholder="Paste YouTube/Shorts URL..." style="flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #3d3d3d; background: #2d2d2d; color: #fff;">
-            <button class="btn" id="youtube-load-btn">Load</button>
+          <!-- HN-only: Article/Discussion tabs -->
+          <div class="hn-view-tabs" id="hn-view-tabs" style="display: none;">
+            <button class="hn-view-btn active" data-view="article">
+              <span>📄</span>
+              <span>Article</span>
+            </button>
+            <button class="hn-view-btn" data-view="discussion">
+              <span>💬</span>
+              <span>Discussion</span>
+              <span class="count" id="hn-comment-count">0</span>
+            </button>
           </div>
-        </div>
-        <div id="external-link-container" style="display:none; text-align: center; padding: 40px;">
-          <div style="font-size: 64px; margin-bottom: 16px;" id="external-icon">📱</div>
-          <h3 id="external-title" style="margin-bottom: 8px;">Open in Browser</h3>
-          <p style="color: #888; margin-bottom: 20px; font-size: 13px;" id="external-desc">This platform doesn't support embedding. Click below to open in your browser.</p>
-          <button class="btn" id="open-external-btn">Open <span id="external-name">Platform</span> →</button>
+          <div class="article-body" id="detail-body">
+            <!-- Dynamic content -->
+          </div>
         </div>
       </section>
 
@@ -922,8 +2336,8 @@ export class BrainrotPanel {
             </div>
             <div class="setting-row">
               <div class="setting-info">
-                <div class="setting-label">Earning rate</div>
-                <div class="setting-desc">GC earned per second while coding</div>
+                <div class="setting-label">Mining rate</div>
+                <div class="setting-desc">$GRASS mined per second during Pomodoro</div>
               </div>
               <div class="setting-control">
                 <div class="slider-group">
@@ -954,14 +2368,14 @@ export class BrainrotPanel {
             <div class="setting-row">
               <div class="setting-info">
                 <div class="setting-label">Brainrot intensity</div>
-                <div class="setting-desc">Visual theme intensity</div>
+                <div class="setting-desc">How cooked are you?</div>
               </div>
               <div class="setting-control">
                 <select class="setting-select" id="setting-intensity">
                   <option value="touching-grass" ${intensity === 'touching-grass' ? 'selected' : ''}>Touching Grass</option>
-                  <option value="casual" ${intensity === 'casual' ? 'selected' : ''}>Casual</option>
-                  <option value="degenerate" ${intensity === 'degenerate' ? 'selected' : ''}>Degenerate</option>
-                  <option value="terminal" ${intensity === 'terminal' ? 'selected' : ''}>Terminal</option>
+                  <option value="casual" ${intensity === 'casual' ? 'selected' : ''}>Lowkey Cooked</option>
+                  <option value="degenerate" ${intensity === 'degenerate' ? 'selected' : ''}>Fully Cooked</option>
+                  <option value="terminal" ${intensity === 'terminal' ? 'selected' : ''}>Ohio Level</option>
                 </select>
               </div>
             </div>
@@ -991,10 +2405,10 @@ export class BrainrotPanel {
 
       <div id="game-over-overlay" class="game-over-overlay">
         <div class="game-over-content">
-          <h2>Game Over!</h2>
+          <h2>Skill Issue</h2>
           <div class="final-score" id="final-score">0</div>
           <div class="game-over-buttons">
-            <button class="btn" id="play-again-btn">Play Again</button>
+            <button class="btn" id="play-again-btn">Run It Back</button>
             <button class="btn btn-secondary" id="back-to-menu-btn">Back to Menu</button>
           </div>
         </div>
@@ -1166,7 +2580,7 @@ export class BrainrotPanel {
         const gameSelection = document.getElementById('game-selection');
         const gameContainer = document.getElementById('game-container');
         const canvas = document.getElementById('game-canvas');
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas ? canvas.getContext('2d') : null;
         const currentScoreEl = document.getElementById('current-score');
         const backBtn = document.getElementById('back-btn');
         const gameOverOverlay = document.getElementById('game-over-overlay');
@@ -1197,24 +2611,23 @@ export class BrainrotPanel {
         const pomoBreakTimeEl = document.getElementById('pomo-break-time');
         let pomodoroActive = false;
 
-        pomoToggleBtn.addEventListener('click', () => {
+        pomoToggleBtn?.addEventListener('click', () => {
           vscode.postMessage({ command: pomodoroActive ? 'pomodoroPause' : 'pomodoroStart' });
         });
-        pomoResetBtn.addEventListener('click', () => {
+        pomoResetBtn?.addEventListener('click', () => {
           vscode.postMessage({ command: 'pomodoroReset' });
         });
-        pomoSkipBtn.addEventListener('click', () => {
+        pomoSkipBtn?.addEventListener('click', () => {
           vscode.postMessage({ command: 'pomodoroSkip' });
         });
 
         // Tab switching with smooth transitions
         document.querySelectorAll('.tab-btn').forEach(btn => {
           btn.addEventListener('click', () => {
-            SoundManager.play('click');
             const currentTab = document.querySelector('.tab-panel.active');
             const nextTab = document.getElementById(btn.dataset.tab + '-tab');
 
-            if (currentTab === nextTab) return;
+            if (!nextTab || currentTab === nextTab) return;
 
             // Fade out current tab
             if (currentTab) {
@@ -1237,6 +2650,12 @@ export class BrainrotPanel {
                 nextTab.style.opacity = '1';
                 nextTab.style.transform = 'translateY(0)';
               });
+
+              // Initialize Reading tab on first open
+              if (btn.dataset.tab === 'reading' && !readingState.initialized) {
+                readingState.initialized = true;
+                fetchReadingData('hn');
+              }
             }, 150);
           });
         });
@@ -1246,6 +2665,7 @@ export class BrainrotPanel {
         let balanceAnimationId = null;
         function animateBalance(targetBalance) {
           if (balanceAnimationId) cancelAnimationFrame(balanceAnimationId);
+          if (!casinoBalanceEl) return;
 
           const startBalance = displayedBalance;
           const diff = targetBalance - startBalance;
@@ -1262,6 +2682,7 @@ export class BrainrotPanel {
           }
 
           function step(currentTime) {
+            if (!casinoBalanceEl) return;
             const elapsed = currentTime - startTime;
             const progress = Math.min(elapsed / duration, 1);
             const eased = 1 - Math.pow(1 - progress, 3); // Ease out cubic
@@ -1276,39 +2697,40 @@ export class BrainrotPanel {
               casinoBalanceEl.textContent = targetBalance.toLocaleString();
               // Reset color
               setTimeout(() => {
-                casinoBalanceEl.style.color = '#fbbf24';
-                casinoBalanceEl.style.textShadow = 'none';
+                if (casinoBalanceEl) {
+                  casinoBalanceEl.style.color = '#fbbf24';
+                  casinoBalanceEl.style.textShadow = 'none';
+                }
               }, 300);
             }
           }
           balanceAnimationId = requestAnimationFrame(step);
         }
 
-        // Add click sounds to all buttons
-        document.addEventListener('click', (e) => {
-          if (e.target.matches('button, .btn, .game-card, .casino-card, .social-btn')) {
-            SoundManager.play('click');
-          }
-        });
-
         // Messages from extension
         window.addEventListener('message', event => {
           const msg = event.data;
           if (msg.command === 'highScoresUpdate') {
-            document.getElementById('snake-high').textContent = msg.highScores.snake || 0;
-            document.getElementById('2048-high').textContent = msg.highScores['2048'] || 0;
-            document.getElementById('flappy-high').textContent = msg.highScores.flappy || 0;
-            document.getElementById('tetris-high').textContent = msg.highScores.tetris || 0;
+            const snakeEl = document.getElementById('snake-high');
+            const el2048 = document.getElementById('2048-high');
+            const flappyEl = document.getElementById('flappy-high');
+            const tetrisEl = document.getElementById('tetris-high');
+            if (snakeEl) snakeEl.textContent = msg.highScores.snake || 0;
+            if (el2048) el2048.textContent = msg.highScores['2048'] || 0;
+            if (flappyEl) flappyEl.textContent = msg.highScores.flappy || 0;
+            if (tetrisEl) tetrisEl.textContent = msg.highScores.tetris || 0;
           } else if (msg.command === 'pomodoroUpdate') {
-            pomoTimerEl.textContent = msg.formattedTime;
+            if (pomoTimerEl) pomoTimerEl.textContent = msg.formattedTime;
             pomodoroActive = msg.state.isActive;
-            pomoToggleBtn.textContent = msg.state.isActive ? 'Pause' : 'Start';
-            const modeText = msg.state.mode === 'work' ? 'Work Time' : (msg.state.mode === 'longBreak' ? 'Long Break' : 'Break Time');
-            pomoModeEl.textContent = modeText;
-            pomoModeEl.className = 'pomodoro-mode ' + (msg.state.mode === 'work' ? 'work' : 'break');
-            pomoSessionsEl.textContent = msg.stats.sessions;
-            pomoWorkTimeEl.textContent = msg.stats.workTime;
-            pomoBreakTimeEl.textContent = msg.stats.breakTime;
+            if (pomoToggleBtn) pomoToggleBtn.textContent = msg.state.isActive ? 'Pause' : 'Start';
+            const modeText = msg.state.mode === 'work' ? 'Grind Mode' : (msg.state.mode === 'longBreak' ? 'Touch Grass' : 'Quick Break');
+            if (pomoModeEl) {
+              pomoModeEl.textContent = modeText;
+              pomoModeEl.className = 'pomodoro-mode ' + (msg.state.mode === 'work' ? 'work' : 'break');
+            }
+            if (pomoSessionsEl) pomoSessionsEl.textContent = msg.stats.sessions;
+            if (pomoWorkTimeEl) pomoWorkTimeEl.textContent = msg.stats.workTime;
+            if (pomoBreakTimeEl) pomoBreakTimeEl.textContent = msg.stats.breakTime;
           } else if (msg.command === 'balanceUpdate') {
             playerBalance = msg.balance;
             animateBalance(msg.balance);
@@ -1317,6 +2739,66 @@ export class BrainrotPanel {
               playerBalance = msg.balance;
               animateBalance(msg.balance);
             }
+          } else if (msg.command === 'hackerNewsData') {
+            readingState.loading = false;
+            if (msg.page === 0) {
+              readingState.hnStories = msg.stories;
+            } else {
+              readingState.hnStories = [...readingState.hnStories, ...msg.stories];
+            }
+            readingState.hnHasMore = msg.hasMore;
+            if (readingState.currentSource === 'hn') {
+              renderHackerNews();
+            }
+          } else if (msg.command === 'hackerNewsError') {
+            readingState.loading = false;
+            if (readingState.currentSource === 'hn') {
+              renderReadingError(msg.error);
+            }
+          } else if (msg.command === 'lessWrongData') {
+            readingState.lwItems = msg.items;
+            readingState.loading = false;
+            if (readingState.currentSource === 'lw') {
+              renderRssItems(readingState.lwItems, 'lw');
+            }
+          } else if (msg.command === 'lessWrongError') {
+            readingState.loading = false;
+            if (readingState.currentSource === 'lw') {
+              renderReadingError(msg.error);
+            }
+          } else if (msg.command === 'acxData') {
+            readingState.acxItems = msg.items;
+            readingState.loading = false;
+            if (readingState.currentSource === 'acx') {
+              renderRssItems(readingState.acxItems, 'acx');
+            }
+          } else if (msg.command === 'acxError') {
+            readingState.loading = false;
+            if (readingState.currentSource === 'acx') {
+              renderReadingError(msg.error);
+            }
+          } else if (msg.command === 'hnPostData') {
+            readingState.detailLoading = false;
+            readingState.currentPost = msg.post;
+            readingState.currentComments = msg.comments;
+            renderHNDetailView();
+          } else if (msg.command === 'hnPostError') {
+            readingState.detailLoading = false;
+            renderDetailError(msg.error);
+          } else if (msg.command === 'lwPostData') {
+            readingState.detailLoading = false;
+            readingState.currentPost = msg.post;
+            renderLWDetailView();
+          } else if (msg.command === 'lwPostError') {
+            readingState.detailLoading = false;
+            renderDetailError(msg.error);
+          } else if (msg.command === 'acxPostData') {
+            readingState.detailLoading = false;
+            readingState.currentPost = msg.post;
+            renderACXDetailView();
+          } else if (msg.command === 'acxPostError') {
+            readingState.detailLoading = false;
+            renderDetailError(msg.error);
           }
         });
 
@@ -1337,40 +2819,44 @@ export class BrainrotPanel {
           card.addEventListener('click', () => startGame(card.dataset.game));
         });
 
-        backBtn.addEventListener('click', () => { stopGame(); showMenu(); });
-        playAgainBtn.addEventListener('click', () => { gameOverOverlay.classList.remove('active'); startGame(currentGame); });
-        backToMenuBtn.addEventListener('click', () => { gameOverOverlay.classList.remove('active'); showMenu(); });
+        backBtn?.addEventListener('click', () => { stopGame(); showMenu(); });
+        playAgainBtn?.addEventListener('click', () => { if (gameOverOverlay) gameOverOverlay.classList.remove('active'); startGame(currentGame); });
+        backToMenuBtn?.addEventListener('click', () => { if (gameOverOverlay) gameOverOverlay.classList.remove('active'); showMenu(); });
 
         function showMenu() {
-          gameSelection.style.display = 'grid';
-          gameContainer.classList.remove('active');
-          betControlsEl.style.display = 'none';
-          gameControls.innerHTML = '';
+          if (gameSelection) gameSelection.style.display = 'grid';
+          if (gameContainer) gameContainer.classList.remove('active');
+          if (betControlsEl) betControlsEl.style.display = 'none';
+          if (gameControls) gameControls.innerHTML = '';
           currentGame = null;
         }
 
         function startGame(game) {
           currentGame = game;
-          gameSelection.style.display = 'none';
-          gameContainer.classList.add('active');
-          currentScoreEl.textContent = '0';
-          gameControls.innerHTML = '';
+          if (gameSelection) gameSelection.style.display = 'none';
+          if (gameContainer) gameContainer.classList.add('active');
+          if (currentScoreEl) currentScoreEl.textContent = '0';
+          if (gameControls) gameControls.innerHTML = '';
           vscode.postMessage({ command: 'gamePlayed', game: game });
 
           const isCasinoGame = casinoGames.includes(game);
-          betControlsEl.style.display = isCasinoGame ? 'flex' : 'none';
+          if (betControlsEl) betControlsEl.style.display = isCasinoGame ? 'flex' : 'none';
 
           // Resize canvas based on game
-          if (game === 'flappy') {
-            canvas.width = 320;
-            canvas.height = 480;
-          } else if (isCasinoGame) {
-            canvas.width = 320;
-            canvas.height = 400;
-          } else {
-            canvas.width = 320;
-            canvas.height = 320;
+          if (canvas) {
+            if (game === 'flappy') {
+              canvas.width = 320;
+              canvas.height = 480;
+            } else if (isCasinoGame) {
+              canvas.width = 320;
+              canvas.height = 400;
+            } else {
+              canvas.width = 320;
+              canvas.height = 320;
+            }
           }
+
+          if (!canvas || !ctx) return;
 
           if (game === 'snake') {
             gameInstance = new SnakeGame(canvas, ctx, updateScore, gameOver);
@@ -1392,139 +2878,13 @@ export class BrainrotPanel {
           gameInstance = null;
         }
 
-        function updateScore(score) { currentScoreEl.textContent = score; }
+        function updateScore(score) { if (currentScoreEl) currentScoreEl.textContent = score; }
         function gameOver(finalScore) {
-          finalScoreEl.textContent = finalScore;
-          gameOverOverlay.classList.add('active');
+          if (finalScoreEl) finalScoreEl.textContent = finalScore;
+          if (gameOverOverlay) gameOverOverlay.classList.add('active');
           vscode.postMessage({ command: 'gameScore', game: currentGame, score: finalScore });
           vscode.postMessage({ command: 'requestHighScores' });
         }
-
-        // Social media handling
-        const socialEmbedContainer = document.getElementById('social-embed-container');
-        const youtubeControls = document.getElementById('youtube-controls');
-        const externalLinkContainer = document.getElementById('external-link-container');
-        let currentExternalUrl = '';
-
-        // Curated YouTube Shorts video IDs for different categories
-        const youtubeShorts = {
-          programming: ['ZI1PHBd1gco', 'JFpZwDh2q0k', 'UQMEJZgPnCY', '6s_2zVp8LV4', 'QH2-TGUlwu4'],
-          lofi: ['n61ULEU7CO0', 'MGGquQPnhGE', 'b3F9Z-GR3PE'],
-          satisfying: ['5aUq4VzTDyI', 'TBFjxjYGT1g', 'G8CeP15EAS8'],
-          memes: ['cL9Wu2kWwSY', 'a3Z7zEc7AXQ', 'Ss7SRjiOCM4', 'kdemFfbS5H0']
-        };
-        let currentShortIndex = 0;
-        let currentCategory = 'programming';
-
-        function loadYouTubeShort(videoId) {
-          // YouTube Shorts embed - use embed URL with loop and controls
-          socialEmbedContainer.innerHTML = '<iframe src="https://www.youtube.com/embed/' + videoId + '?autoplay=1&loop=1&playlist=' + videoId + '" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="aspect-ratio: 9/16; max-height: 400px; width: auto; margin: 0 auto;"></iframe>';
-          socialEmbedContainer.style.display = 'flex';
-          socialEmbedContainer.style.justifyContent = 'center';
-          externalLinkContainer.style.display = 'none';
-        }
-
-        function nextShort() {
-          const shorts = youtubeShorts[currentCategory];
-          currentShortIndex = (currentShortIndex + 1) % shorts.length;
-          loadYouTubeShort(shorts[currentShortIndex]);
-        }
-
-        function prevShort() {
-          const shorts = youtubeShorts[currentCategory];
-          currentShortIndex = (currentShortIndex - 1 + shorts.length) % shorts.length;
-          loadYouTubeShort(shorts[currentShortIndex]);
-        }
-
-        function extractYouTubeId(url) {
-          const patterns = [
-            /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/|youtube\\.com\\/shorts\\/)([a-zA-Z0-9_-]{11})/,
-            /^([a-zA-Z0-9_-]{11})$/
-          ];
-          for (const pattern of patterns) {
-            const match = url.match(pattern);
-            if (match) return match[1];
-          }
-          return null;
-        }
-
-        function showExternalLink(platform, icon, url) {
-          const platformNames = { tiktok: 'TikTok', twitter: 'Twitter/X', reddit: 'Reddit' };
-          const descriptions = {
-            tiktok: 'TikTok videos require their native player to work properly.',
-            twitter: 'Twitter/X blocks embedding due to security restrictions.',
-            reddit: 'Reddit requires authentication for embedded viewing.'
-          };
-          document.getElementById('external-icon').textContent = icon;
-          document.getElementById('external-title').textContent = platformNames[platform] || platform;
-          document.getElementById('external-desc').textContent = descriptions[platform] || 'This platform doesn\\'t support embedding.';
-          document.getElementById('external-name').textContent = platformNames[platform] || platform;
-          currentExternalUrl = url;
-          socialEmbedContainer.style.display = 'none';
-          youtubeControls.style.display = 'none';
-          externalLinkContainer.style.display = 'block';
-        }
-
-        document.querySelectorAll('.social-btn').forEach(btn => {
-          btn.addEventListener('click', () => {
-            document.querySelectorAll('.social-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            const platform = btn.dataset.social;
-
-            if (platform === 'youtube') {
-              // Show YouTube Shorts with embed and controls
-              currentCategory = 'programming';
-              currentShortIndex = Math.floor(Math.random() * youtubeShorts[currentCategory].length);
-              loadYouTubeShort(youtubeShorts[currentCategory][currentShortIndex]);
-              youtubeControls.style.display = 'block';
-              externalLinkContainer.style.display = 'none';
-            } else {
-              // Show external link for platforms that can't embed
-              const externalUrls = {
-                tiktok: 'https://www.tiktok.com/foryou',
-                twitter: 'https://twitter.com/explore',
-                reddit: 'https://www.reddit.com/r/programming'
-              };
-              const icons = { tiktok: '🎵', twitter: '𝕏', reddit: '🤖' };
-              showExternalLink(platform, icons[platform], externalUrls[platform]);
-              youtubeControls.style.display = 'none';
-            }
-            vscode.postMessage({ command: 'socialOpened' });
-          });
-        });
-
-        // YouTube Shorts category buttons
-        document.querySelectorAll('.yt-category').forEach(btn => {
-          btn.addEventListener('click', () => {
-            currentCategory = btn.dataset.category;
-            currentShortIndex = Math.floor(Math.random() * youtubeShorts[currentCategory].length);
-            loadYouTubeShort(youtubeShorts[currentCategory][currentShortIndex]);
-            // Highlight active category
-            document.querySelectorAll('.yt-category').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-          });
-        });
-
-        // YouTube Shorts navigation
-        document.getElementById('yt-prev-btn')?.addEventListener('click', prevShort);
-        document.getElementById('yt-next-btn')?.addEventListener('click', nextShort);
-
-        // YouTube URL input
-        document.getElementById('youtube-load-btn').addEventListener('click', () => {
-          const input = document.getElementById('youtube-url-input');
-          const videoId = extractYouTubeId(input.value.trim());
-          if (videoId) {
-            loadYouTubeShort(videoId);
-            input.value = '';
-          }
-        });
-
-        // Open external URL button
-        document.getElementById('open-external-btn').addEventListener('click', () => {
-          if (currentExternalUrl) {
-            vscode.postMessage({ command: 'openExternal', url: currentExternalUrl });
-          }
-        });
 
         // Settings handlers
         document.querySelectorAll('.toggle').forEach(toggle => {
@@ -1532,7 +2892,6 @@ export class BrainrotPanel {
             toggle.classList.toggle('active');
             const id = toggle.id;
             const value = toggle.classList.contains('active');
-            SoundManager.play('click');
             if (id === 'setting-autodetect') {
               vscode.postMessage({ command: 'updateSetting', key: 'autoDetect', value });
             } else if (id === 'setting-autominimize') {
@@ -1572,7 +2931,6 @@ export class BrainrotPanel {
 
         // Intensity select
         document.getElementById('setting-intensity')?.addEventListener('change', (e) => {
-          SoundManager.play('click');
           vscode.postMessage({ command: 'updateSetting', key: 'brainrotIntensity', value: e.target.value });
         });
 
@@ -1583,6 +2941,471 @@ export class BrainrotPanel {
             vscode.postMessage({ command: 'resetStats' });
           }
         });
+
+        // ===================== READING TAB =====================
+        const readingState = {
+          currentSource: 'hn',
+          hnPage: 0,
+          hnStories: [],
+          hnHasMore: true,
+          lwItems: [],
+          acxItems: [],
+          loading: false,
+          initialized: false,
+          // Detail view state
+          viewingDetail: false,
+          detailLoading: false,
+          currentPost: null,
+          currentComments: [],
+          hnDetailView: 'article', // 'article' or 'discussion'
+          currentExternalUrl: ''
+        };
+
+        // Detail view elements (with null safety)
+        function getEl(id) { return document.getElementById(id); }
+
+        const sourceTitles = {
+          hn: 'Hacker News',
+          lw: 'LessWrong',
+          acx: 'Astral Codex Ten'
+        };
+
+        // Source tab switching
+        document.querySelectorAll('.source-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            readingState.currentSource = btn.dataset.source;
+            const titleEl = document.getElementById('reading-source-title');
+            if (titleEl) titleEl.textContent = sourceTitles[readingState.currentSource];
+            renderReadingContent();
+          });
+        });
+
+        function renderReadingContent() {
+          const content = document.getElementById('reading-content');
+          const source = readingState.currentSource;
+
+          if (source === 'hn' && readingState.hnStories.length > 0) {
+            renderHackerNews();
+          } else if (source === 'lw' && readingState.lwItems.length > 0) {
+            renderRssItems(readingState.lwItems, 'lw');
+          } else if (source === 'acx' && readingState.acxItems.length > 0) {
+            renderRssItems(readingState.acxItems, 'acx');
+          } else if (content) {
+            content.innerHTML = '<div class="reading-loading"><div class="spinner"></div><p>Loading articles...</p></div>';
+            fetchReadingData(source);
+          }
+        }
+
+        function fetchReadingData(source) {
+          readingState.loading = true;
+          if (source === 'hn') {
+            vscode.postMessage({ command: 'fetchHackerNews', page: readingState.hnPage });
+          } else if (source === 'lw') {
+            vscode.postMessage({ command: 'fetchLessWrong' });
+          } else if (source === 'acx') {
+            vscode.postMessage({ command: 'fetchACX' });
+          }
+        }
+
+        function renderHackerNews() {
+          const content = document.getElementById('reading-content');
+          if (!content) return;
+          let html = '';
+
+          readingState.hnStories.forEach(story => {
+            const timeAgo = formatTimeAgo(story.time * 1000);
+            const url = story.url || ('https://news.ycombinator.com/item?id=' + story.id);
+            html += '<div class="article-item" data-url="' + escapeAttr(url) + '" data-hn-id="' + story.id + '">' +
+              '<div class="article-score"><span class="arrow">▲</span><span>' + story.score + '</span></div>' +
+              '<div class="article-content">' +
+                '<div class="article-title">' + escapeHtml(story.title) + '</div>' +
+                '<div class="article-meta">' +
+                  '<span class="article-domain">' + story.domain + '</span>' +
+                  '<span>· ' + story.descendants + ' comments</span>' +
+                  '<span>· ' + timeAgo + '</span>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          });
+
+          if (readingState.hnHasMore) {
+            html += '<button class="reading-load-more" id="hn-load-more">Load More...</button>';
+          }
+
+          content.innerHTML = html;
+          attachArticleHandlers();
+
+          const loadMoreBtn = document.getElementById('hn-load-more');
+          if (loadMoreBtn) {
+            loadMoreBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              loadMoreBtn.textContent = 'Loading...';
+              loadMoreBtn.disabled = true;
+              readingState.hnPage++;
+              vscode.postMessage({ command: 'fetchHackerNews', page: readingState.hnPage });
+            });
+          }
+        }
+
+        function renderRssItems(items, source) {
+          const content = document.getElementById('reading-content');
+          if (!content) return;
+          let html = '';
+
+          items.forEach(item => {
+            const timeAgo = item.pubDate ? formatTimeAgo(new Date(item.pubDate).getTime()) : '';
+            // Extract LW post ID from URL if available
+            const lwPostId = source === 'lw' ? extractLWPostId(item.link) : null;
+            const dataAttrs = 'data-url="' + escapeAttr(item.link || '') + '"' +
+              (lwPostId ? ' data-lw-id="' + escapeAttr(lwPostId) + '"' : '');
+
+            html += '<div class="article-item no-score" ' + dataAttrs + '>' +
+              '<div class="article-content">' +
+                '<div class="article-title">' + escapeHtml(item.title || 'Untitled') + '</div>' +
+                '<div class="article-meta">' +
+                  (timeAgo ? '<span>' + timeAgo + '</span>' : '') +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          });
+
+          content.innerHTML = html || '<div class="reading-error"><p>No articles found</p></div>';
+          attachArticleHandlers();
+        }
+
+        function attachArticleHandlers() {
+          document.querySelectorAll('.article-item').forEach(item => {
+            item.addEventListener('click', () => {
+              const url = item.dataset.url;
+              const hnId = item.dataset.hnId;
+              const lwId = item.dataset.lwId;
+
+              if (readingState.currentSource === 'hn' && hnId) {
+                openHNPost(parseInt(hnId), url);
+              } else if (readingState.currentSource === 'lw' && lwId) {
+                openLWPost(lwId, url);
+              } else if (readingState.currentSource === 'acx') {
+                openACXPost(url);
+              } else if (readingState.currentSource === 'lw') {
+                // Extract post ID from LW URL
+                const postId = extractLWPostId(url);
+                if (postId) {
+                  openLWPost(postId, url);
+                } else {
+                  vscode.postMessage({ command: 'openExternal', url });
+                }
+              } else {
+                vscode.postMessage({ command: 'openExternal', url });
+              }
+            });
+          });
+        }
+
+        function extractLWPostId(url) {
+          const match = url.match(/lesswrong\\.com\\/posts\\/([^\\/]+)/);
+          return match ? match[1] : null;
+        }
+
+        function showDetailView() {
+          const listView = getEl('reading-list-view');
+          const detailView = getEl('reading-detail-view');
+          if (listView) listView.style.display = 'none';
+          if (detailView) detailView.classList.add('active');
+          readingState.viewingDetail = true;
+        }
+
+        function hideDetailView() {
+          const listView = getEl('reading-list-view');
+          const detailView = getEl('reading-detail-view');
+          const hnTabs = getEl('hn-view-tabs');
+          if (detailView) detailView.classList.remove('active');
+          if (listView) listView.style.display = 'block';
+          readingState.viewingDetail = false;
+          readingState.currentPost = null;
+          readingState.currentComments = [];
+          if (hnTabs) hnTabs.style.display = 'none';
+        }
+
+        function showDetailLoading() {
+          showDetailView();
+          const titleEl = getEl('detail-title');
+          const metaEl = getEl('detail-meta');
+          const bodyEl = getEl('detail-body');
+          if (titleEl) titleEl.textContent = 'Loading...';
+          if (metaEl) metaEl.innerHTML = '';
+          if (bodyEl) bodyEl.innerHTML = '<div class="reader-loading"><div class="spinner"></div><p>Loading content...</p></div>';
+        }
+
+        function openHNPost(id, url) {
+          showDetailLoading();
+          readingState.currentExternalUrl = 'https://news.ycombinator.com/item?id=' + id;
+          readingState.detailLoading = true;
+          readingState.hnDetailView = 'discussion'; // Default to discussion for HN
+          vscode.postMessage({ command: 'fetchHNPost', id });
+        }
+
+        function openLWPost(postId, url) {
+          showDetailLoading();
+          readingState.currentExternalUrl = url;
+          readingState.detailLoading = true;
+          vscode.postMessage({ command: 'fetchLWPost', postId });
+        }
+
+        function openACXPost(url) {
+          showDetailLoading();
+          readingState.currentExternalUrl = url;
+          readingState.detailLoading = true;
+          vscode.postMessage({ command: 'fetchACXPost', url });
+        }
+
+        function renderHNDetailView() {
+          const post = readingState.currentPost;
+          if (!post) return;
+
+          const titleEl = getEl('detail-title');
+          const metaEl = getEl('detail-meta');
+          const hnTabs = getEl('hn-view-tabs');
+          const commentCount = getEl('hn-comment-count');
+
+          if (titleEl) titleEl.textContent = post.title;
+          if (metaEl) metaEl.innerHTML =
+            '<span class="score">▲ ' + post.score + '</span>' +
+            '<span class="author">by ' + escapeHtml(post.by) + '</span>' +
+            '<span>' + formatTimeAgo(post.time * 1000) + '</span>' +
+            '<span class="article-domain">' + post.domain + '</span>';
+
+          // Show HN-specific tabs
+          if (hnTabs) hnTabs.style.display = 'flex';
+          if (commentCount) commentCount.textContent = post.descendants || 0;
+
+          // Update tab state
+          document.querySelectorAll('.hn-view-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === readingState.hnDetailView);
+          });
+
+          renderHNDetailContent();
+        }
+
+        function renderHNDetailContent() {
+          const post = readingState.currentPost;
+          if (!post) return;
+
+          const bodyEl = getEl('detail-body');
+          if (!bodyEl) return;
+
+          if (readingState.hnDetailView === 'article') {
+            // Show article view
+            if (post.text) {
+              // It's an Ask HN / Show HN / text post
+              bodyEl.innerHTML =
+                '<div class="hn-post-text">' + post.text + '</div>' +
+                '<div class="open-in-browser">' +
+                  '<p>This is a text post on Hacker News</p>' +
+                  '<button class="btn" id="view-on-hn-btn">↗ View on HN</button>' +
+                '</div>';
+              document.getElementById('view-on-hn-btn')?.addEventListener('click', () => {
+                vscode.postMessage({ command: 'openExternal', url: readingState.currentExternalUrl });
+              });
+            } else if (post.url) {
+              // External article - show open prompt
+              bodyEl.innerHTML =
+                '<div class="open-in-browser">' +
+                  '<p>This article is hosted externally</p>' +
+                  '<button class="btn" id="open-article-btn">📄 Open Article</button>' +
+                  '<p style="margin-top: 16px; font-size: 11px; color: var(--text-muted);">' + escapeHtml(post.url) + '</p>' +
+                '</div>';
+              document.getElementById('open-article-btn')?.addEventListener('click', () => {
+                vscode.postMessage({ command: 'openExternal', url: post.url });
+              });
+            }
+          } else {
+            // Show discussion/comments
+            if (readingState.currentComments.length === 0) {
+              bodyEl.innerHTML = '<div class="no-comments">No comments yet</div>';
+            } else {
+              bodyEl.innerHTML = '<div class="comment-thread">' + renderComments(readingState.currentComments) + '</div>';
+            }
+          }
+        }
+
+        function renderComments(comments, depth = 0) {
+          if (!comments || comments.length === 0) return '';
+
+          let html = '';
+          comments.forEach(comment => {
+            if (!comment || !comment.text) return;
+
+            const timeAgo = formatTimeAgo(comment.time * 1000);
+            html += '<div class="comment">' +
+              '<div class="comment-header">' +
+                '<span class="comment-author">' + escapeHtml(comment.by || 'unknown') + '</span>' +
+                '<span class="comment-time">' + timeAgo + '</span>' +
+              '</div>' +
+              '<div class="comment-body">' + comment.text + '</div>';
+
+            // Render nested replies
+            if (comment.replies && comment.replies.length > 0) {
+              html += '<div class="comment-replies">' + renderComments(comment.replies, depth + 1) + '</div>';
+            } else if (comment.kids && comment.kids.length > 0 && depth < 2) {
+              html += '<div class="more-replies">' + comment.kids.length + ' more replies...</div>';
+            }
+
+            html += '</div>';
+          });
+
+          return html;
+        }
+
+        function renderLWDetailView() {
+          const post = readingState.currentPost;
+          if (!post) return;
+
+          const titleEl = getEl('detail-title');
+          const metaEl = getEl('detail-meta');
+          const bodyEl = getEl('detail-body');
+          const hnTabs = getEl('hn-view-tabs');
+
+          // Hide HN tabs for LW
+          if (hnTabs) hnTabs.style.display = 'none';
+
+          if (titleEl) titleEl.textContent = post.title;
+
+          const date = post.date ? new Date(post.date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+          if (metaEl) metaEl.innerHTML =
+            '<span class="author">by ' + escapeHtml(post.author) + '</span>' +
+            (date ? '<span>' + date + '</span>' : '') +
+            '<span class="score">▲ ' + (post.karma || 0) + ' karma</span>';
+
+          if (bodyEl) {
+            if (post.content) {
+              bodyEl.innerHTML = '<div class="article-text-content">' + post.content + '</div>';
+            } else {
+              bodyEl.innerHTML =
+                '<div class="open-in-browser">' +
+                  '<p>Unable to load article content</p>' +
+                  '<button class="btn" id="lw-open-browser-btn">↗ Open in Browser</button>' +
+                '</div>';
+              document.getElementById('lw-open-browser-btn')?.addEventListener('click', () => {
+                vscode.postMessage({ command: 'openExternal', url: readingState.currentExternalUrl });
+              });
+            }
+          }
+        }
+
+        function renderACXDetailView() {
+          const post = readingState.currentPost;
+          if (!post) return;
+
+          const titleEl = getEl('detail-title');
+          const metaEl = getEl('detail-meta');
+          const bodyEl = getEl('detail-body');
+          const hnTabs = getEl('hn-view-tabs');
+
+          // Hide HN tabs for ACX
+          if (hnTabs) hnTabs.style.display = 'none';
+
+          if (titleEl) titleEl.textContent = post.title;
+
+          const date = post.date ? new Date(post.date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+          if (metaEl) metaEl.innerHTML =
+            '<span class="author">by ' + escapeHtml(post.author) + '</span>' +
+            (date ? '<span>' + date + '</span>' : '');
+
+          if (bodyEl) {
+            if (post.content && post.content.length > 100) {
+              bodyEl.innerHTML = '<div class="article-text-content">' + post.content + '</div>';
+            } else {
+              bodyEl.innerHTML =
+                '<div class="open-in-browser">' +
+                  '<p>Unable to load article content</p>' +
+                  '<button class="btn" id="acx-open-browser-btn">↗ Open in Browser</button>' +
+                '</div>';
+              document.getElementById('acx-open-browser-btn')?.addEventListener('click', () => {
+                vscode.postMessage({ command: 'openExternal', url: readingState.currentExternalUrl });
+              });
+            }
+          }
+        }
+
+        function renderDetailError(message) {
+          const titleEl = getEl('detail-title');
+          const metaEl = getEl('detail-meta');
+          const bodyEl = getEl('detail-body');
+
+          if (titleEl) titleEl.textContent = 'Error';
+          if (metaEl) metaEl.innerHTML = '';
+          if (bodyEl) {
+            bodyEl.innerHTML =
+              '<div class="reading-error">' +
+                '<p>' + message + '</p>' +
+                '<button class="btn btn-secondary" id="detail-retry-btn">Retry</button>' +
+              '</div>';
+            document.getElementById('detail-retry-btn')?.addEventListener('click', () => {
+              hideDetailView();
+            });
+          }
+        }
+
+        // Back button handler
+        document.getElementById('reading-back-btn')?.addEventListener('click', () => {
+          hideDetailView();
+        });
+
+        // Open external button handler
+        document.getElementById('reading-open-external')?.addEventListener('click', () => {
+          if (readingState.currentExternalUrl) {
+            vscode.postMessage({ command: 'openExternal', url: readingState.currentExternalUrl });
+          }
+        });
+
+        // HN view tab switching
+        document.querySelectorAll('.hn-view-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('.hn-view-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            readingState.hnDetailView = btn.dataset.view;
+            renderHNDetailContent();
+          });
+        });
+
+        function renderReadingError(message) {
+          const content = document.getElementById('reading-content');
+          if (!content) return;
+          content.innerHTML = '<div class="reading-error">' +
+            '<p>' + escapeHtml(message) + '</p>' +
+            '<button class="btn btn-secondary retry-btn" id="reading-retry">Retry</button>' +
+          '</div>';
+          document.getElementById('reading-retry')?.addEventListener('click', () => {
+            renderReadingContent();
+          });
+        }
+
+        function formatTimeAgo(timestamp) {
+          const seconds = Math.floor((Date.now() - timestamp) / 1000);
+          if (seconds < 60) return 'just now';
+          const minutes = Math.floor(seconds / 60);
+          if (minutes < 60) return minutes + 'm ago';
+          const hours = Math.floor(minutes / 60);
+          if (hours < 24) return hours + 'h ago';
+          const days = Math.floor(hours / 24);
+          if (days < 30) return days + 'd ago';
+          const months = Math.floor(days / 30);
+          return months + 'mo ago';
+        }
+
+        function escapeHtml(text) {
+          if (text == null) return '';
+          const div = document.createElement('div');
+          div.textContent = String(text);
+          return div.innerHTML;
+        }
+
+        function escapeAttr(text) {
+          if (!text) return '';
+          return String(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
 
         // ===================== SNAKE =====================
         class SnakeGame {
@@ -2091,7 +3914,7 @@ export class BrainrotPanel {
           stop() { if (this.animationId) cancelAnimationFrame(this.animationId); }
           drop() {
             const bet = parseInt(this.betInput.value) || 10;
-            if (bet > playerBalance) { alert('Not enough GC!'); return; }
+            if (bet > playerBalance) { alert('Not enough $GRASS! NGMI'); return; }
             placeBet(bet);
             SoundManager.play('click');
             this.currentBet = bet;
@@ -2210,7 +4033,7 @@ export class BrainrotPanel {
                 // Floating win text
                 this.floatingTexts.push({
                   x: slotCenterX, y: slotY - 20,
-                  text: '+' + winAmount + ' GC',
+                  text: '+' + winAmount + ' $GRASS',
                   color: color, life: 1
                 });
 
@@ -2267,7 +4090,7 @@ export class BrainrotPanel {
             this.controls.innerHTML = '';
             const dropBtn = document.createElement('button');
             dropBtn.className = 'btn btn-bet'; dropBtn.textContent = 'Drop Ball';
-            dropBtn.onclick = () => this.drop();
+            dropBtn.addEventListener('click', () => this.drop());
             if (this.gameState === 'dropping') dropBtn.disabled = true;
             this.controls.appendChild(dropBtn);
             // Risk selector
@@ -2282,7 +4105,7 @@ export class BrainrotPanel {
               if (r === this.risk) opt.selected = true;
               riskSelect.appendChild(opt);
             });
-            riskSelect.onchange = (e) => { this.risk = e.target.value; this.draw(); };
+            riskSelect.addEventListener('change', (e) => { this.risk = e.target.value; this.draw(); });
             this.controls.appendChild(riskLabel);
             this.controls.appendChild(riskSelect);
           }
@@ -2467,7 +4290,7 @@ export class BrainrotPanel {
           stop() { if (this.animationId) cancelAnimationFrame(this.animationId); }
           spin() {
             const bet = parseInt(this.betInput.value) || 10;
-            if (bet > playerBalance) { alert('Not enough GC!'); return; }
+            if (bet > playerBalance) { alert('Not enough $GRASS! NGMI'); return; }
             placeBet(bet);
             SoundManager.play('click');
             this.currentBet = bet;
@@ -2595,14 +4418,14 @@ export class BrainrotPanel {
                 // Floating text
                 this.floatingTexts.push({
                   x: this.canvas.width / 2, y: 80,
-                  text: '+' + winAmount + ' GC!',
+                  text: '+' + winAmount + ' $GRASS!',
                   color: '#4ade80', life: 1, scale: 1.5
                 });
               } else {
                 this.particles.burst(this.canvas.width / 2, centerY, 10, ['#fbbf24', '#fff'], 3);
                 this.floatingTexts.push({
                   x: this.canvas.width / 2, y: 80,
-                  text: '+' + winAmount + ' GC',
+                  text: '+' + winAmount + ' $GRASS',
                   color: '#fbbf24', life: 1, scale: 1
                 });
               }
@@ -2640,7 +4463,7 @@ export class BrainrotPanel {
             this.controls.innerHTML = '';
             const spinBtn = document.createElement('button');
             spinBtn.className = 'btn btn-bet'; spinBtn.textContent = 'SPIN';
-            spinBtn.onclick = () => this.spin();
+            spinBtn.addEventListener('click', () => this.spin());
             spinBtn.disabled = this.spinning;
             this.controls.appendChild(spinBtn);
           }
@@ -2787,7 +4610,7 @@ export class BrainrotPanel {
             if (this.lastWinAmount > 0 && !this.spinning) {
               this.ctx.fillStyle = '#4ade80';
               this.ctx.font = 'bold 16px sans-serif';
-              this.ctx.fillText('WIN: ' + this.lastWinAmount + ' GC', this.canvas.width / 2, 270);
+              this.ctx.fillText('WIN: ' + this.lastWinAmount + ' $GRASS', this.canvas.width / 2, 270);
             }
 
             this.ctx.textAlign = 'left';

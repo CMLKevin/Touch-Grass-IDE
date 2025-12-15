@@ -1,82 +1,152 @@
 # Touch Grass IDE
 
-> The open-source brainrot IDE that YC should have funded.
+**The open-source brainrot IDE. Play games while AI writes your code.**
 
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/pigeon.touch-grass-ide)](https://marketplace.visualstudio.com/items?itemName=pigeon.touch-grass-ide)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.2.0-orange.svg)](https://github.com/CMLKevin/touch-grass-ide)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Open Source](https://img.shields.io/badge/open%20source-yes-brightgreen.svg)](https://github.com/CMLKevin/touch-grass-ide)
+[![Invite Required](https://img.shields.io/badge/invite%20required-no-blue.svg)](#installation)
 
-A VS Code extension that detects when AI coding tools (Claude Code, Cursor, Copilot) are generating code, then surfaces a panel with minigames, casino games, and entertainment to fill the wait time. Auto-dismisses when generation completes.
+> *"Why alt-tab to doom scroll when you can doom scroll in your IDE?"*
 
-## What is this?
+---
 
-Touch Grass IDE detects when your AI coding tools are generating code, then shows entertainment options to fill the wait time. When generation completes, it auto-minimizes so you can get back to work.
+## Why Touch Grass IDE?
 
-**Features:**
-- **4 Built-in Games** - Snake, Flappy Bird, Plinko, and Slots
-- **Economy System** - Earn Grass Coins (GC) while coding, bet them in casino games
-- **Pomodoro Timer** - Stay productive with work/break cycles
-- **Social Media** - YouTube Shorts, TikTok, Twitter, Reddit embeds
-- **Achievement System** - 30+ achievements across all rarities
-- **Auto-detection** - Detects AI generation in terminal
-- **Comprehensive Settings** - Customize everything in-panel
-- **Free & Open Source** - No waitlist, no invite codes
+We've all been there. You prompt Claude, Cursor, or Copilot, and now you're staring at a terminal for 30 seconds to 5 minutes waiting for AI to write your code. It's too short to start a new task, but just long enough to destroy your focus by checking Twitter.
 
-## Why?
+**Touch Grass IDE** solves this by bringing productive procrastination directly into VSCode. No context switching. No browser tabs. No guilt (okay, maybe a little).
 
-AI coding tools create awkward 1-5 minute wait times. You're going to check your phone anyway. Touch Grass keeps you in the editor so you're ready when generation completes.
+### But wait, doesn't Chad IDE do this?
 
-Or maybe this is all a terrible idea and you should actually touch grass. We added an achievement for that too.
+Sure, if you:
+- Have an invite (closed beta, very exclusive, much wow)
+- Trust a VC-backed startup with your "brainrot" data
+- Want to connect your actual Stake gambling account to your IDE (seriously?)
+- Enjoy closed-source software where you can't see what's happening
+- Think Y Combinator endorsing gambling-in-IDEs is peak innovation
+
+**Touch Grass IDE is different:**
+
+| Feature | Touch Grass IDE | Chad IDE |
+|---------|-----------------|----------|
+| Open Source | Yes | No |
+| Price | Free | ??? (invite only) |
+| Gambling | Fun mini-games with fake currency | Real Stake integration |
+| Data Privacy | Your data stays local | Trust us bro |
+| Invite Required | No | Yes |
+| Y Combinator Controversy | None | [Plenty](https://x.com) |
+| Actually Ships | Yes | "Coming soon" |
+
+---
+
+## Features
+
+### Games
+
+Four built-in games to fill those AI generation gaps:
+
+**Skill Games:**
+- **Snake** - The classic. Chase high scores, unlock achievements.
+- **Flappy Bird** - Tap to not die. Harder than it sounds.
+
+**Casino Games:**
+- **Plinko** - Drop balls, hit multipliers, feel something.
+- **Slots** - Chase the 777. Lose all your Grass Coins. Repeat.
+
+*Unlike Chad IDE, we don't connect to real gambling platforms. Your wallet is safe. Your fake Grass Coins? Not so much.*
+
+### Reading
+
+Stay informed without leaving VSCode:
+
+- **Hacker News** - Top stories, comments, the whole orange site experience
+- **LessWrong** - AI alignment content for the intellectually curious
+- **Astral Codex Ten** - Scott Alexander essays for your big brain moments
+- **Custom Sources** - Add your own RSS feeds and embeds
+
+### Pomodoro Timer
+
+A full-featured Pomodoro implementation:
+
+- 25-minute work sessions
+- 5-minute short breaks
+- 15-minute long breaks (every 4 sessions)
+- Session tracking and statistics
+- **Earn Grass Coins while you work** (configurable rate)
+
+### $GRASS Economy
+
+Our completely fake, totally worthless, absolutely addictive currency system:
+
+- **Earn** Grass Coins during Pomodoro work sessions
+- **Spend** them on casino games
+- **Lose** them all and unlock the "Fanum Tax" achievement
+- **Brag** about your balance to absolutely no one
+
+Starting balance: 100 $GRASS
+
+### 39 Achievements
+
+Unlock achievements across five rarity tiers:
+
+- **Common** - First steps into brainrot
+- **Uncommon** - You're getting the hang of this
+- **Rare** - Dedicated procrastinator
+- **Legendary** - Touch grass? Never heard of it
+- **Cursed** - Secret achievements for true degenerates
+
+Hidden achievements include gems like:
+- *Midnight Coder* - Use the panel between 2-5 AM
+- *Skill Issue* - Die within 3 seconds in Snake
+- *Rage Quit* - Play 5 games in under 2 minutes
+- *Paper Hands* - Reach 0 $GRASS balance
+
+### Auto-Detection
+
+Touch Grass IDE automatically detects when AI is generating code:
+
+- **Claude** terminal activity
+- **Cursor** AI operations
+- **GitHub Copilot** suggestions
+- **Generic AI/Agent patterns**
+
+Panel appears when AI starts, disappears when it's done. Seamless procrastination.
+
+---
 
 ## Installation
 
-1. Open VS Code
-2. Go to Extensions (Cmd/Ctrl+Shift+X)
+### From VSCode Marketplace
+
+1. Open VSCode
+2. Go to Extensions (Cmd+Shift+X / Ctrl+Shift+X)
 3. Search "Touch Grass IDE"
 4. Click Install
-5. Question your life choices
+5. No invite required. We're not Chad IDE.
+
+### From Source
+
+```bash
+git clone https://github.com/CMLKevin/touch-grass-ide.git
+cd touch-grass-ide
+npm install
+npm run compile
+```
+
+Then press F5 in VSCode to launch the extension in debug mode.
+
+---
 
 ## Usage
 
-The extension auto-activates when it detects AI generation. You can also manually open it:
+### Commands
 
-- `Cmd/Ctrl+Shift+P` -> "Touch Grass: Open Brainrot Panel"
-- `Cmd/Ctrl+Shift+P` -> "Touch Grass: Toggle Auto-Detection"
-- `Cmd/Ctrl+Shift+P` -> "Touch Grass: Reset Stats"
+- `Touch Grass: Open Brainrot Panel` - Open the panel manually
+- `Touch Grass: Toggle Auto-Detection` - Enable/disable auto-show
+- `Touch Grass: Reset All Stats` - Nuclear option for a fresh start
 
-## Games
-
-### Classic Games
-| Game | Controls | Description |
-|------|----------|-------------|
-| **Snake** | Arrow keys / WASD | Classic snake with smooth animations and particles |
-| **Flappy Bird** | Space / Click | Navigate through pipes, rotation physics |
-
-### Casino Games
-Bet your hard-earned Grass Coins!
-
-| Game | Description |
-|------|-------------|
-| **Plinko** | Drop balls through pegs, hit multipliers up to 110x |
-| **Slots** | Spin to win with symbols from 2x to 100x |
-
-## Economy System
-
-- **Earn GC**: 1 Grass Coin per second while actively coding
-- **Panel Closed**: Must have panel closed to earn
-- **Bet in Casino**: Risk your coins for bigger rewards
-- **Configurable**: Adjust earning rate in settings
-
-## Pomodoro Timer
-
-Built-in Pomodoro technique timer:
-- 25 minutes work sessions
-- 5 minute short breaks
-- 15 minute long breaks (every 4 sessions)
-- Session tracking and statistics
-
-## Configuration
-
-All settings can be changed in the **Settings** tab within the panel, or via VS Code settings:
+### Settings
 
 ```json
 {
@@ -86,142 +156,95 @@ All settings can be changed in the **Settings** tab within the panel, or via VS 
   "touchgrass.enableAchievements": true,
   "touchgrass.casinoEnabled": true,
   "touchgrass.earningRate": 1,
-  "touchgrass.idleTimeout": 30
+  "touchgrass.idleTimeout": 30,
+  "touchgrass.customSources": []
 }
 ```
 
-### Settings Reference
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `autoDetect` | `true` | Auto-show panel during AI generation |
-| `autoMinimize` | `true` | Auto-hide when generation completes |
-| `brainrotIntensity` | `"casual"` | Theme: touching-grass / casual / degenerate / terminal |
-| `enableAchievements` | `true` | Show achievement notifications |
-| `casinoEnabled` | `true` | Enable casino games and GC earning |
-| `earningRate` | `1` | Grass Coins earned per second |
-| `idleTimeout` | `30` | Seconds before considered idle |
-
-## Achievements
-
-Unlock 30+ achievements as you procrastinate:
-
-### Common
-| Achievement | Description |
-|-------------|-------------|
-| Baby's First Brainrot | Opened the panel for the first time |
-| Gamer Moment | Played your first minigame |
-| Just a Quick Break | Spent 1 minute in brainrot |
-| Doom Scroller | Opened social media |
-| Tomato Timer | Completed first Pomodoro |
-| Feeling Lucky | Place your first casino bet |
-
-### Uncommon
-| Achievement | Description |
-|-------------|-------------|
-| Snek Master | Score 100+ in Snake |
-| Bird Brain | Score 10+ in Flappy Bird |
-| AI is Still Cooking | 5 minutes in brainrot |
-| Serial Gamer | Play 10 games total |
-| Edge Lord | Hit 10x+ multiplier in Plinko |
-
-### Rare
-| Achievement | Description |
-|-------------|-------------|
-| Anaconda | Score 500+ in Snake |
-| Flap God | Score 50+ in Flappy Bird |
-| Variety Gamer | Play all 4 games |
-| Professional Procrastinator | 1 hour total brainrot |
-| Lucky 777 | Get triple 7s on slots |
-
-### Legendary
-| Achievement | Description |
-|-------------|-------------|
-| Ouroboros | Score 1000+ in Snake |
-| Icarus Who? | Score 100+ in Flappy Bird |
-| Touched Grass? Never. | 24 hours total brainrot |
-| Whale | Accumulate 10,000 GC |
-| JACKPOT! | Win 100x or more on a bet |
-
-### Cursed (Secret)
-| Achievement | Description |
-|-------------|-------------|
-| Sleep is for the Weak | Used between 2-5am |
-| Skill Issue | Die in Snake within 3 seconds |
-| Rage Quit | Play 5 games in under 2 minutes |
-| Broke | Reach 0 GC balance |
-
-## Development
-
-```bash
-# Clone the repository
-git clone https://github.com/CMLKevin/Touch-Grass-IDE.git
-cd Touch-Grass-IDE
-
-# Install dependencies
-npm install
-
-# Compile
-npm run compile
-
-# Watch mode
-npm run watch
-
-# Package extension
-npx vsce package
-```
-
-### Project Structure
-
-```
-src/
-├── extension.ts          # Extension entry point
-├── panels/
-│   └── BrainrotPanel.ts  # Main webview panel (games, UI)
-└── core/
-    ├── StateManager.ts       # Global state management
-    ├── SessionTracker.ts     # Stats and session tracking
-    ├── AchievementEngine.ts  # Achievement system
-    ├── CurrencyManager.ts    # Grass Coins economy
-    ├── ActivityDetector.ts   # AI generation detection
-    ├── CodingActivityTracker.ts  # Coding activity monitoring
-    └── PomodoroManager.ts    # Pomodoro timer
-```
-
-## Contributing
-
-PRs welcome! Ideas for contributions:
-- Add new minigames
-- Create new achievements
-- Improve game animations
-- Add new social media integrations
-- Localization support
-
-## Changelog
-
-### v1.2.0
-- Added Plinko and Slots casino games
-- Added Grass Coins economy system
-- Added comprehensive Settings panel
-- Added Pomodoro timer
-- Added social media embeds
-- Added 30+ achievements
-- Improved game animations and sound effects
-
-### v1.1.0
-- Added Flappy Bird
-- Added achievement system
-- Added auto-detection improvements
-
-### v1.0.0
-- Initial release with Snake game
-
-## License
-
-MIT - do whatever you want with it.
+**Brainrot Intensity Levels:**
+- `touching-grass` - Light usage, you're still functional
+- `casual` - Normal degenerate behavior
+- `degenerate` - Concerning but not clinical
+- `terminal` - You should probably go outside
 
 ---
 
-*This is satire. Please actually touch grass sometimes.*
+## Philosophy
 
-Made with 🌿 by developers who should probably be working
+Touch Grass IDE exists because:
+
+1. **AI coding is the future**, but waiting is boring
+2. **Context switching kills productivity** more than mini-games
+3. **Open source > closed source**, always
+4. **Fun shouldn't require a VC pitch deck**
+5. **Your IDE, your rules** - no data harvesting, no real money gambling, no "invite only" gatekeeping
+
+We're not trying to "turn rage bait into a product strategy." We're just developers who wanted to play Snake while Claude thinks.
+
+---
+
+## Contributing
+
+PRs welcome! This is open source, unlike *some* IDEs.
+
+```bash
+# Fork the repo
+# Create your feature branch
+git checkout -b feature/add-tetris
+
+# Commit your changes
+git commit -m "Add Tetris because why not"
+
+# Push to the branch
+git push origin feature/add-tetris
+
+# Open a PR
+```
+
+### Ideas for Contributions
+
+- More games (Tetris, 2048, Minesweeper)
+- More article sources
+- Better achievement ideas
+- Themes and customization
+- Whatever weird feature you want
+
+---
+
+## FAQ
+
+**Q: Is this a joke?**
+A: It's a fully functional VSCode extension. Whether it's a joke is up to you.
+
+**Q: How is this different from Chad IDE?**
+A: We're open source, free, don't require invites, don't integrate real gambling, and actually exist publicly. Also we're not backed by Y Combinator, which apparently now funds "brainrot" as a category.
+
+**Q: Will this make me more productive?**
+A: Probably not. But you'll have more fun being unproductive.
+
+**Q: Can I lose real money?**
+A: No. Grass Coins are completely fake. Unlike Chad IDE's Stake integration.
+
+**Q: Why "Touch Grass"?**
+A: Irony. You should probably touch grass. But since you won't, at least do it in style.
+
+---
+
+## License
+
+MIT License - Do whatever you want with it. That's what open source means.
+
+---
+
+## Acknowledgments
+
+- Everyone who's ever doom-scrolled during AI generation
+- The Claude, Cursor, and Copilot teams for making us wait
+- Not Y Combinator
+
+---
+
+<p align="center">
+  <b>Touch Grass IDE</b><br>
+  <i>Because if you're going to rot your brain, at least do it open source.</i>
+</p>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Grass blades - light color for dark theme -->
+  <path d="M3 14 Q4 8 5 14" stroke="#4ade80" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M6 14 Q7 6 8 14" stroke="#4ade80" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M9 14 Q10 9 11 14" stroke="#4ade80" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <!-- Game controller hint -->
+  <rect x="10" y="3" width="4" height="2.5" rx="0.5" fill="#4ade80" opacity="0.8"/>
+</svg>

@@ -80,6 +80,11 @@ export function activate(context: vscode.ExtensionContext) {
     codingActivityTracker.setPanelVisible(visible);
   });
 
+  // Track Pomodoro work mode for currency earning
+  BrainrotPanel.onPomodoroWorkModeChange((isWorkMode) => {
+    codingActivityTracker.setPomodoroWorkMode(isWorkMode);
+  });
+
   // Start activity detection
   activityDetector.activate();
 
